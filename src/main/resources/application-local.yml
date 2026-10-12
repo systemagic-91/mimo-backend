@@ -1,0 +1,6 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/luma}
+    username: ${DB_USERNAME:luma}
+    password: ${DB_PASSWORD:luma123}
+    driver-class-name: org.postgresql.Driver
