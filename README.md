@@ -22,3 +22,11 @@ The API returns the refresh token in the response body to match the current cont
 To provision the first owner, set `BOOTSTRAP_OWNER_ENABLED=true`, `BOOTSTRAP_OWNER_NAME`, `BOOTSTRAP_OWNER_EMAIL`, and a one-time `BOOTSTRAP_OWNER_PASSWORD` of at least 12 characters, then start the application once. Bootstrap refuses to overwrite an existing account; unset the credentials and disable the flag immediately afterward.
 
 Health is available at `/actuator/health`; OpenAPI is at `/v3/api-docs` and Swagger UI at `/swagger-ui/index.html`. Only the health endpoint and API documentation are public; other routes require a valid JWT.
+
+## HTTP contracts
+
+Every response includes `X-Request-Id`. Clients may send a 1-64 character identifier using letters, digits, `.`, `_` or `-`; invalid values are replaced. The value is also placed in the logging MDC. Errors use `application/problem+json` with stable `code`, `requestId`, and optional `fields`; internal errors never include exception messages or stack traces in the response.
+
+List endpoints should use `PaginationRequest` and `PageEnvelope`: `page` is 1-based, defaults to 1; `pageSize` defaults to 50 and is limited to 200. Each endpoint supplies its own allowlist to `toPageable`, so client sort values are never interpolated into SQL.
+
+For retryable mutations, call `IdempotencyService.execute` inside the application service transaction with the authenticated user ID, a stable operation scope, the `Idempotency-Key` header, the request payload and a callback returning `IdempotentResponse`. The key is scoped by user and operation. Identical canonical JSON replays the saved HTTP status/body for 24 hours by default; reusing the key with a different payload returns `409 IDEMPOTENCY_KEY_REUSED`. Expired keys can be claimed again. The OpenAPI document describes the Bearer JWT scheme, common errors, pagination and the `Idempotency-Key` header component.
