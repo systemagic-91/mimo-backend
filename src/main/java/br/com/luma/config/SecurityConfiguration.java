@@ -9,18 +9,27 @@ import org.springframework.security.config.annotation.method.configuration.Enabl
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import br.com.luma.shared.web.ProblemDetailWriter;
 
 @Configuration
 @EnableMethodSecurity
 public class SecurityConfiguration {
 
     @Bean
-        SecurityFilterChain securityFilterChain(HttpSecurity http, JwtAuthenticationConverter jwtAuthenticationConverter)
+            SecurityFilterChain securityFilterChain(HttpSecurity http, JwtAuthenticationConverter jwtAuthenticationConverter,
+                    ProblemDetailWriter problemDetailWriter)
                         throws Exception {
         return http
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(Customizer.withDefaults())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .exceptionHandling(exceptions -> exceptions
+                        .authenticationEntryPoint((request, response, exception) -> problemDetailWriter.write(
+                                request, response, org.springframework.http.HttpStatus.UNAUTHORIZED,
+                                "UNAUTHENTICATED", "Autenticação obrigatória."))
+                        .accessDeniedHandler((request, response, exception) -> problemDetailWriter.write(
+                                request, response, org.springframework.http.HttpStatus.FORBIDDEN,
+                                "FORBIDDEN", "Você não tem permissão para acessar este recurso.")))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers(
                                 "/actuator/health",

@@ -2,17 +2,11 @@ package br.com.luma.auth.exception;
 
 import org.springframework.http.HttpStatus;
 
-import lombok.Getter;
+import br.com.luma.shared.exception.ApiException;
 
-@Getter
-public class AuthException extends RuntimeException {
-
-    private final HttpStatus status;
-    private final String code;
+public class AuthException extends ApiException {
 
     public AuthException(HttpStatus status, String code, String message) {
-        super(message);
-        this.status = status;
-        this.code = code;
+        super(status, code, message);
     }
 }
