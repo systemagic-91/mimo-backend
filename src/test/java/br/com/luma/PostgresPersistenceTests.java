@@ -2,23 +2,41 @@ package br.com.luma;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.http.MediaType;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
+import org.springframework.security.oauth2.jwt.JwtClaimsSet;
+import org.springframework.security.oauth2.jwt.JwtEncoder;
+import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
+import org.springframework.security.oauth2.jwt.JwsHeader;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -29,6 +47,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import br.com.luma.auth.entity.UserEntity;
 import br.com.luma.auth.entity.IdempotencyKeyEntity;
 import br.com.luma.auth.entity.RefreshTokenEntity;
+import br.com.luma.auth.service.RefreshTokenHasher;
 import br.com.luma.auth.repository.IdempotencyKeyRepository;
 import br.com.luma.auth.repository.RefreshTokenRepository;
 import br.com.luma.auth.repository.UserRepository;
@@ -58,6 +77,7 @@ import br.com.luma.shared.repository.CodeSequenceRepository;
 
 @SpringBootTest
 @ActiveProfiles("test")
+@AutoConfigureMockMvc
 class PostgresPersistenceTests {
 
     private static final String externalDatabaseUrl = System.getenv("POSTGRES_TEST_URL");
@@ -142,6 +162,197 @@ class PostgresPersistenceTests {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+        @Autowired
+        private MockMvc mockMvc;
+
+        @Autowired
+        private PasswordEncoder passwordEncoder;
+
+        @Autowired
+        private JwtEncoder jwtEncoder;
+
+        @Autowired
+        private RefreshTokenHasher refreshTokenHasher;
+
+        @Value("${app.security.jwt.issuer}")
+        private String jwtIssuer;
+
+        @Test
+        void loginAndMeReturnOnlyPublicUserFields() throws Exception {
+        UserEntity user = createAuthUser(Role.OWNER, true, "CorrectHorseBattery77!");
+
+        MvcResult loginResult = postJson("/api/v1/auth/login", Map.of(
+            "email", user.getEmail(), "password", "CorrectHorseBattery77!"), null);
+        assertThat(loginResult.getResponse().getStatus()).isEqualTo(200);
+        var login = objectMapper.readTree(loginResult.getResponse().getContentAsString());
+        assertThat(login.path("user").path("role").asText()).isEqualTo("owner");
+        assertThat(login.path("accessToken").asText()).isNotBlank();
+        assertThat(login.path("refreshToken").asText()).isNotBlank();
+        assertThat(login.path("user").has("passwordHash")).isFalse();
+        assertThat(login.path("user").has("password")).isFalse();
+
+        mockMvc.perform(get("/api/v1/auth/me")
+                .header("Authorization", "Bearer " + login.path("accessToken").asText()))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.user.email").value(user.getEmail()))
+            .andExpect(jsonPath("$.user.role").value("owner"))
+            .andExpect(jsonPath("$.user.passwordHash").doesNotExist())
+            .andExpect(jsonPath("$.session.loggedAt").exists())
+            .andExpect(jsonPath("$.session.expiresAt").exists());
+        }
+
+        @Test
+        void invalidCredentialsAreGenericAndInactiveUsersAreRejected() throws Exception {
+        UserEntity inactive = createAuthUser(Role.STAFF, false, "CorrectHorseBattery77!");
+
+        MvcResult unknownEmail = postJson("/api/v1/auth/login", Map.of(
+            "email", "missing-" + UUID.randomUUID() + "@example.com", "password", "WrongPassword123!"), null);
+        MvcResult wrongPassword = postJson("/api/v1/auth/login", Map.of(
+            "email", inactive.getEmail(), "password", "WrongPassword123!"), null);
+        assertThat(unknownEmail.getResponse().getStatus()).isEqualTo(401);
+        assertThat(wrongPassword.getResponse().getStatus()).isEqualTo(401);
+        assertThat(objectMapper.readTree(unknownEmail.getResponse().getContentAsString()).path("detail").asText())
+            .isEqualTo(objectMapper.readTree(wrongPassword.getResponse().getContentAsString()).path("detail").asText());
+
+        mockMvc.perform(post("/api/v1/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsBytes(Map.of(
+                    "email", inactive.getEmail(), "password", "CorrectHorseBattery77!"))))
+            .andExpect(status().isForbidden())
+            .andExpect(jsonPath("$.code").value("USER_INACTIVE"));
+        }
+
+        @Test
+        void refreshRotatesTokensAndReplayRevokesAllActiveSessions() throws Exception {
+        UserEntity user = createAuthUser(Role.STAFF, true, "CorrectHorseBattery77!");
+        var login = login(user.getEmail(), "CorrectHorseBattery77!");
+        String originalRefreshToken = login.path("refreshToken").asText();
+
+        var rotated = refresh(originalRefreshToken);
+        assertThat(rotated.getResponse().getStatus()).isEqualTo(200);
+        var rotatedBody = objectMapper.readTree(rotated.getResponse().getContentAsString());
+        String rotatedRefreshToken = rotatedBody.path("refreshToken").asText();
+        assertThat(rotatedRefreshToken).isNotEqualTo(originalRefreshToken);
+
+        mockMvc.perform(post("/api/v1/auth/refresh")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsBytes(Map.of("refreshToken", originalRefreshToken))))
+            .andExpect(status().isUnauthorized())
+            .andExpect(jsonPath("$.code").value("INVALID_REFRESH_TOKEN"));
+
+        mockMvc.perform(post("/api/v1/auth/refresh")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsBytes(Map.of("refreshToken", rotatedRefreshToken))))
+            .andExpect(status().isUnauthorized());
+
+        assertThat(refreshTokenRepository.findByTokenHash(refreshTokenHasher.hash(rotatedRefreshToken)))
+            .get()
+            .extracting(RefreshTokenEntity::getRevokedAt)
+            .isNotNull();
+        }
+
+    @Test
+    void expiredRefreshTokenIsRevokedAndRejected() throws Exception {
+        UserEntity user = createAuthUser(Role.STAFF, true, "CorrectHorseBattery77!");
+        Instant now = Instant.now();
+        String rawRefreshToken = "expired-" + UUID.randomUUID();
+
+        RefreshTokenEntity expired = new RefreshTokenEntity();
+        expired.setUser(user);
+        expired.setTokenHash(refreshTokenHasher.hash(rawRefreshToken));
+        expired.setCreatedAt(now.minus(2, ChronoUnit.DAYS));
+        expired.setExpiresAt(now.minus(1, ChronoUnit.DAYS));
+        refreshTokenRepository.saveAndFlush(expired);
+
+        assertThat(refresh(rawRefreshToken).getResponse().getStatus()).isEqualTo(401);
+        assertThat(refreshTokenRepository.findByTokenHash(refreshTokenHasher.hash(rawRefreshToken)))
+                .get()
+                .extracting(RefreshTokenEntity::getRevokedAt)
+                .isNotNull();
+    }
+
+        @Test
+        void logoutRevokesRefreshToken() throws Exception {
+        UserEntity user = createAuthUser(Role.STAFF, true, "CorrectHorseBattery77!");
+        var login = login(user.getEmail(), "CorrectHorseBattery77!");
+        String accessToken = login.path("accessToken").asText();
+        String refreshToken = login.path("refreshToken").asText();
+
+        mockMvc.perform(post("/api/v1/auth/logout")
+                .header("Authorization", "Bearer " + accessToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsBytes(Map.of("refreshToken", refreshToken))))
+            .andExpect(status().isNoContent());
+
+        assertThat(refreshTokenRepository.findByTokenHash(refreshTokenHasher.hash(refreshToken)))
+            .get()
+            .extracting(RefreshTokenEntity::getRevokedAt)
+            .isNotNull();
+        assertThat(refresh(refreshToken).getResponse().getStatus()).isEqualTo(401);
+        }
+
+        @Test
+        void changingPasswordInvalidatesAccessAndRefreshTokensImmediately() throws Exception {
+        UserEntity user = createAuthUser(Role.OWNER, true, "OldPasswordVeryStrong77!");
+        var login = login(user.getEmail(), "OldPasswordVeryStrong77!");
+        String accessToken = login.path("accessToken").asText();
+        String refreshToken = login.path("refreshToken").asText();
+
+        mockMvc.perform(post("/api/v1/auth/change-password")
+                .header("Authorization", "Bearer " + accessToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsBytes(Map.of(
+                    "currentPassword", "OldPasswordVeryStrong77!",
+                    "newPassword", "NewPasswordVeryStrong88!"))))
+            .andExpect(status().isNoContent());
+
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + accessToken))
+            .andExpect(status().isUnauthorized());
+        assertThat(refresh(refreshToken).getResponse().getStatus()).isEqualTo(401);
+        assertThat(login(user.getEmail(), "OldPasswordVeryStrong77!").path("code").asText())
+            .isEqualTo("INVALID_CREDENTIALS");
+        assertThat(login(user.getEmail(), "NewPasswordVeryStrong88!").path("accessToken").asText()).isNotBlank();
+        }
+
+        @Test
+        void expiredAccessTokensAreRejectedAndSettingsAreOwnerOnly() throws Exception {
+        UserEntity staff = createAuthUser(Role.STAFF, true, "CorrectHorseBattery77!");
+        UserEntity owner = createAuthUser(Role.OWNER, true, "CorrectHorseBattery77!");
+        var staffLogin = login(staff.getEmail(), "CorrectHorseBattery77!");
+        var ownerLogin = login(owner.getEmail(), "CorrectHorseBattery77!");
+
+        mockMvc.perform(get("/api/v1/settings")
+                .header("Authorization", "Bearer " + staffLogin.path("accessToken").asText()))
+            .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/v1/settings")
+                .header("Authorization", "Bearer " + ownerLogin.path("accessToken").asText()))
+            .andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/v1/pieces"))
+            .andExpect(status().isUnauthorized());
+
+        String expiredToken = createExpiredAccessToken(staff);
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + expiredToken))
+            .andExpect(status().isUnauthorized());
+        }
+
+        @Test
+        void loginIsRateLimitedByClientIp() throws Exception {
+        String email = "missing-" + UUID.randomUUID() + "@example.com";
+        for (int attempt = 0; attempt < 5; attempt++) {
+            postJson("/api/v1/auth/login", Map.of("email", email, "password", "WrongPassword123!"), "198.51.100.77");
+        }
+
+        mockMvc.perform(post("/api/v1/auth/login")
+                .with(request -> {
+                    request.setRemoteAddr("198.51.100.77");
+                    return request;
+                })
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsBytes(Map.of("email", email, "password", "WrongPassword123!"))))
+            .andExpect(status().isTooManyRequests())
+            .andExpect(jsonPath("$.code").value("RATE_LIMITED"));
+        }
 
     @Test
     @Transactional
@@ -370,7 +581,9 @@ class PostgresPersistenceTests {
             auditLog.setAfterState(Map.of("valueCents", 6000));
             auditLog.setOccurredAt(now);
             auditLogRepository.saveAndFlush(auditLog);
-            assertThat(auditLogRepository.findAll()).singleElement()
+            assertThat(auditLogRepository.findAll())
+                .filteredOn(saved -> entityId.equals(saved.getEntityId()))
+                .singleElement()
                 .satisfies(saved -> assertThat(saved.getAfterState()).containsEntry("valueCents", 6000));
 
             IdempotencyKeyEntity idempotency = new IdempotencyKeyEntity();
@@ -409,5 +622,50 @@ class PostgresPersistenceTests {
         item.setCommissionRateSnapshot(25);
         item.setStatus(ConsignmentItemStatus.COM_VENDEDORA);
         consignmentItemRepository.saveAndFlush(item);
+    }
+
+    private UserEntity createAuthUser(Role role, boolean active, String rawPassword) {
+        UserEntity user = new UserEntity();
+        user.setName("Auth test user");
+        user.setEmail("auth-" + UUID.randomUUID() + "@example.com");
+        user.setPasswordHash(passwordEncoder.encode(rawPassword));
+        user.setRole(role);
+        user.setActive(active);
+        return userRepository.saveAndFlush(user);
+    }
+
+    private JsonNode login(String email, String password) throws Exception {
+        MvcResult result = postJson("/api/v1/auth/login", Map.of("email", email, "password", password), null);
+        return objectMapper.readTree(result.getResponse().getContentAsString());
+    }
+
+    private MvcResult refresh(String refreshToken) throws Exception {
+        return postJson("/api/v1/auth/refresh", Map.of("refreshToken", refreshToken), null);
+    }
+
+    private MvcResult postJson(String path, Object body, String clientIp) throws Exception {
+        MockHttpServletRequestBuilder request = post(path).contentType(MediaType.APPLICATION_JSON);
+        if (clientIp != null) {
+            request.with(mockRequest -> {
+                mockRequest.setRemoteAddr(clientIp);
+                return mockRequest;
+            });
+        }
+        return mockMvc.perform(request.content(objectMapper.writeValueAsBytes(body))).andReturn();
+    }
+
+    private String createExpiredAccessToken(UserEntity user) {
+        Instant now = Instant.now();
+        JwtClaimsSet claims = JwtClaimsSet.builder()
+                .issuer(jwtIssuer)
+                .subject(user.getId().toString())
+                .issuedAt(now.minus(2, ChronoUnit.MINUTES))
+                .expiresAt(now.minus(1, ChronoUnit.MINUTES))
+                .claim("email", user.getEmail())
+                .claim("roles", List.of("ROLE_" + user.getRole().name()))
+                .claim("authVersion", user.getAuthVersion())
+                .build();
+        return jwtEncoder.encode(JwtEncoderParameters.from(
+                JwsHeader.with(MacAlgorithm.HS256).build(), claims)).getTokenValue();
     }
 }
