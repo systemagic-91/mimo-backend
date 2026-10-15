@@ -12,6 +12,11 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -486,6 +491,168 @@ class PostgresPersistenceTests {
     }
 
     @Test
+    void receivesLabelsSearchesAndPreservesPieceHistory() throws Exception {
+        UserEntity user = createAuthUser(Role.STAFF, true, "CorrectHorseBattery77!");
+        String accessToken = login(user.getEmail(), "CorrectHorseBattery77!").path("accessToken").asText();
+        long originalPieceCount = pieceRepository.count();
+        String preview = objectMapper.readTree(mockMvc.perform(get("/api/v1/pieces/next-code")
+                .header("Authorization", "Bearer " + accessToken))
+                .andReturn().getResponse().getContentAsString()).path("code").asText();
+
+        MvcResult received = postPieceJson("/api/v1/pieces/receive",
+                Map.of("type", "Brinco", "valueCents", 8490,
+                        "stage", "BANHO_OURO", "note", "Lote de teste"),
+                accessToken, "receive-" + UUID.randomUUID());
+        assertThat(received.getResponse().getStatus()).isEqualTo(201);
+        JsonNode receivedBody = objectMapper.readTree(received.getResponse().getContentAsString());
+        JsonNode receivedPiece = receivedBody.path("piece");
+        UUID pieceId = UUID.fromString(receivedPiece.path("id").asText());
+        String code = receivedPiece.path("code").asText();
+        assertThat(code).isEqualTo(preview);
+        assertThat(receivedPiece.path("status").asText()).isEqualTo("BANHO_OURO");
+        assertThat(receivedPiece.path("currentLocation").asText()).isEqualTo("No banho de ouro");
+        assertThat(receivedBody.path("events").size()).isEqualTo(2);
+        assertThat(receivedBody.path("events").get(0).path("stage").asText()).isEqualTo("FABRICA");
+        assertThat(receivedBody.path("events").get(1).path("stage").asText()).isEqualTo("BANHO_OURO");
+        assertThat(Instant.parse(receivedBody.path("events").get(0).path("occurredAt").asText()))
+                .isBefore(Instant.parse(receivedBody.path("events").get(1).path("occurredAt").asText()));
+        assertThat(receivedBody.path("events").get(0).path("actorUserId").asText()).isEqualTo(user.getId().toString());
+        assertThat(pieceRepository.count()).isEqualTo(originalPieceCount + 1);
+
+        MvcResult labeled = postPieceJson("/api/v1/pieces/label",
+                Map.of("sourcePieceId", pieceId, "type", "Brinco", "valueCents", 8990,
+                        "photoUrl", "https://storage.example/pieces/test.jpg", "note", "Dourado",
+                        "backFromBath", true),
+                accessToken, "label-" + UUID.randomUUID());
+        assertThat(labeled.getResponse().getStatus()).isEqualTo(200);
+        JsonNode labeledPiece = objectMapper.readTree(labeled.getResponse().getContentAsString());
+        assertThat(labeledPiece.path("id").asText()).isEqualTo(pieceId.toString());
+        assertThat(labeledPiece.path("code").asText()).isEqualTo(code);
+        assertThat(labeledPiece.path("status").asText()).isEqualTo("ETIQUETADA");
+        assertThat(labeledPiece.path("currentLocation").asText()).isEqualTo("Estoque");
+        assertThat(labeledPiece.path("photoUrl").asText()).isEqualTo("https://storage.example/pieces/test.jpg");
+        assertThat(pieceRepository.count()).isEqualTo(originalPieceCount + 1);
+
+        mockMvc.perform(get("/api/v1/pieces/{pieceId}", pieceId)
+                .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(code))
+                .andExpect(jsonPath("$.valueCents").value(8990));
+        mockMvc.perform(get("/api/v1/pieces/{pieceId}/events", pieceId)
+                .header("Authorization", "Bearer " + accessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isArray())
+                .andExpect(jsonPath("$[2].stage").value("ETIQUETADA"))
+                .andExpect(jsonPath("$[2].actorUserId").value(user.getId().toString()));
+        mockMvc.perform(get("/api/v1/pieces")
+                .header("Authorization", "Bearer " + accessToken)
+                .param("q", code)
+                .param("status", "ETIQUETADA")
+                .param("page", "1")
+                .param("pageSize", "10")
+                .param("sort", "createdAt,desc"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].id").value(pieceId.toString()))
+                .andExpect(jsonPath("$.pagination.page").value(1));
+        mockMvc.perform(get("/api/v1/pieces")
+                .header("Authorization", "Bearer " + accessToken)
+                .param("sort", "passwordHash,asc"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_PAGINATION"));
+    }
+
+    @Test
+    void rejectsInvalidPieceStagesAndLabelingWithoutBathReturn() throws Exception {
+        UserEntity user = createAuthUser(Role.STAFF, true, "CorrectHorseBattery77!");
+        String accessToken = login(user.getEmail(), "CorrectHorseBattery77!").path("accessToken").asText();
+
+        MvcResult invalidType = postPieceJson("/api/v1/pieces/receive",
+                Map.of("type", "Tipo inexistente", "valueCents", 1000, "stage", "FABRICA"),
+                accessToken, "invalid-type-" + UUID.randomUUID());
+        assertThat(invalidType.getResponse().getStatus()).isEqualTo(400);
+        assertThat(objectMapper.readTree(invalidType.getResponse().getContentAsString()).path("fields").has("type"))
+                .isTrue();
+
+        MvcResult invalidReceive = postPieceJson("/api/v1/pieces/receive",
+                Map.of("type", "Brinco", "valueCents", 1000, "stage", "ETIQUETADA"),
+                accessToken, "invalid-receive-" + UUID.randomUUID());
+        assertThat(invalidReceive.getResponse().getStatus()).isEqualTo(422);
+        assertThat(objectMapper.readTree(invalidReceive.getResponse().getContentAsString()).path("code").asText())
+                .isEqualTo("INVALID_INITIAL_STAGE");
+
+        MvcResult factoryPiece = postPieceJson("/api/v1/pieces/receive",
+                Map.of("type", "Brinco", "valueCents", 2000, "stage", "FABRICA"),
+                accessToken, "factory-" + UUID.randomUUID());
+        assertThat(factoryPiece.getResponse().getStatus()).isEqualTo(201);
+        JsonNode factoryReceipt = objectMapper.readTree(factoryPiece.getResponse().getContentAsString());
+        assertThat(factoryReceipt.path("piece").path("status").asText()).isEqualTo("FABRICA");
+        assertThat(factoryReceipt.path("piece").path("currentLocation").asText()).isEqualTo("Fábrica");
+        assertThat(factoryReceipt.path("events").size()).isEqualTo(1);
+        assertThat(factoryReceipt.path("events").get(0).path("stage").asText()).isEqualTo("FABRICA");
+        assertThat(factoryReceipt.path("events").get(0).path("actorUserId").asText()).isEqualTo(user.getId().toString());
+        UUID factoryPieceId = UUID.fromString(factoryReceipt.path("piece").path("id").asText());
+        MvcResult invalidLabel = postPieceJson("/api/v1/pieces/label",
+                Map.of("sourcePieceId", factoryPieceId, "type", "Brinco", "valueCents", 2000,
+                        "backFromBath", true),
+                accessToken, "invalid-label-" + UUID.randomUUID());
+        assertThat(invalidLabel.getResponse().getStatus()).isEqualTo(409);
+        assertThat(objectMapper.readTree(invalidLabel.getResponse().getContentAsString()).path("code").asText())
+                .isEqualTo("INVALID_PIECE_TRANSITION");
+
+        MvcResult bathPiece = postPieceJson("/api/v1/pieces/receive",
+                Map.of("type", "Colar", "valueCents", 3000, "stage", "BANHO_OURO"),
+                accessToken, "bath-" + UUID.randomUUID());
+        UUID bathPieceId = UUID.fromString(objectMapper.readTree(bathPiece.getResponse().getContentAsString())
+                .path("piece").path("id").asText());
+        MvcResult falseBathReturn = postPieceJson("/api/v1/pieces/label",
+                Map.of("sourcePieceId", bathPieceId, "type", "Colar", "valueCents", 3000,
+                        "backFromBath", false),
+                accessToken, "false-bath-return-" + UUID.randomUUID());
+        assertThat(falseBathReturn.getResponse().getStatus()).isEqualTo(409);
+        assertThat(objectMapper.readTree(falseBathReturn.getResponse().getContentAsString()).path("code").asText())
+                .isEqualTo("INVALID_PIECE_TRANSITION");
+        assertThat(pieceRepository.findById(bathPieceId)).get()
+                .extracting(PieceEntity::getStatus).isEqualTo(PieceStage.BANHO_OURO);
+        assertThat(pieceEventRepository.findAllByPiece_IdOrderByOccurredAtAscIdAsc(bathPieceId))
+                .extracting(PieceEventEntity::getStage)
+                .containsExactly(PieceStage.FABRICA, PieceStage.BANHO_OURO);
+    }
+
+    @Test
+    void issuesUniquePieceCodesForConcurrentReceipts() throws Exception {
+        UserEntity user = createAuthUser(Role.STAFF, true, "CorrectHorseBattery77!");
+        String accessToken = login(user.getEmail(), "CorrectHorseBattery77!").path("accessToken").asText();
+        ExecutorService executor = Executors.newFixedThreadPool(8);
+        try {
+            List<Callable<String>> requests = new java.util.ArrayList<>();
+            for (int i = 0; i < 16; i++) {
+                String idempotencyKey = "concurrent-receive-" + UUID.randomUUID();
+                requests.add(() -> {
+                    MvcResult result = postPieceJson("/api/v1/pieces/receive",
+                            Map.of("type", "Pulseira", "valueCents", 1500, "stage", "FABRICA"),
+                            accessToken, idempotencyKey);
+                    assertThat(result.getResponse().getStatus()).isEqualTo(201);
+                    return objectMapper.readTree(result.getResponse().getContentAsString())
+                            .path("piece").path("code").asText();
+                });
+            }
+            List<Future<String>> results = executor.invokeAll(requests, 30, TimeUnit.SECONDS);
+            List<String> codes = results.stream().map(result -> {
+                try {
+                    assertThat(result.isDone()).isTrue();
+                    return result.get();
+                } catch (Exception exception) {
+                    throw new AssertionError("Concurrent piece receipt failed", exception);
+                }
+            }).toList();
+            assertThat(codes).hasSize(16).doesNotHaveDuplicates();
+            assertThat(codes).allMatch(code -> code.matches("LU-[0-9]{4,}"));
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
     void partialUniqueIndexAllowsOnlyOneActiveConsignmentItemPerPiece() {
         UserEntity user = new UserEntity();
         user.setName("Owner");
@@ -717,6 +884,16 @@ class PostgresPersistenceTests {
             });
         }
         return mockMvc.perform(request.content(objectMapper.writeValueAsBytes(body))).andReturn();
+    }
+
+    private MvcResult postPieceJson(String path, Object body, String accessToken, String idempotencyKey)
+            throws Exception {
+        return mockMvc.perform(post(path)
+                .header("Authorization", "Bearer " + accessToken)
+                .header("Idempotency-Key", idempotencyKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsBytes(body)))
+                .andReturn();
     }
 
     private String createExpiredAccessToken(UserEntity user) {

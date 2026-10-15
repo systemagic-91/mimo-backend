@@ -8,13 +8,27 @@ import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.repository.query.Param;
 
 import br.com.luma.piece.entity.PieceEntity;
+import br.com.luma.shared.PieceStage;
 import jakarta.persistence.LockModeType;
 
 public interface PieceRepository extends JpaRepository<PieceEntity, UUID> {
     Optional<PieceEntity> findByCode(String code);
+
+    @Query("select piece from PieceEntity piece "
+            + "where (:status is null or piece.status = :status) "
+            + "and (:query is null or lower(piece.code) like lower(concat('%', :query, '%')) "
+            + "or lower(piece.type) like lower(concat('%', :query, '%')))")
+    Page<PieceEntity> search(@Param("query") String query, @Param("status") PieceStage status,
+            Pageable pageable);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select piece from PieceEntity piece where piece.id = :id")
+    Optional<PieceEntity> findByIdForUpdate(@Param("id") UUID id);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select piece from PieceEntity piece where piece.id in :ids")
