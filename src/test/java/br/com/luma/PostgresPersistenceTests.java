@@ -12,6 +12,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -48,6 +49,9 @@ import br.com.luma.auth.entity.UserEntity;
 import br.com.luma.auth.entity.IdempotencyKeyEntity;
 import br.com.luma.auth.entity.RefreshTokenEntity;
 import br.com.luma.auth.service.RefreshTokenHasher;
+import br.com.luma.shared.idempotency.IdempotencyService;
+import br.com.luma.shared.idempotency.IdempotentResponse;
+import br.com.luma.shared.exception.ApiException;
 import br.com.luma.auth.repository.IdempotencyKeyRepository;
 import br.com.luma.auth.repository.RefreshTokenRepository;
 import br.com.luma.auth.repository.UserRepository;
@@ -174,6 +178,9 @@ class PostgresPersistenceTests {
 
         @Autowired
         private RefreshTokenHasher refreshTokenHasher;
+
+        @Autowired
+        private IdempotencyService idempotencyService;
 
         @Value("${app.security.jwt.issuer}")
         private String jwtIssuer;
@@ -352,6 +359,64 @@ class PostgresPersistenceTests {
                 .content(objectMapper.writeValueAsBytes(Map.of("email", email, "password", "WrongPassword123!"))))
             .andExpect(status().isTooManyRequests())
             .andExpect(jsonPath("$.code").value("RATE_LIMITED"));
+        }
+
+        @Test
+        void idempotentCommandReplaysResponseAndRejectsDifferentPayload() throws Exception {
+        UserEntity user = createAuthUser(Role.OWNER, true, "CorrectHorseBattery77!");
+        String key = "receive-" + UUID.randomUUID();
+        var firstPayload = objectMapper.readTree("{\"pieceIds\":[\"a\"],\"valueCents\":8490}");
+        var reorderedPayload = objectMapper.readTree("{\"valueCents\":8490,\"pieceIds\":[\"a\"]}");
+        var conflictingPayload = objectMapper.readTree("{\"pieceIds\":[\"a\"],\"valueCents\":9000}");
+        var responseBody = objectMapper.readTree("{\"pieceId\":\"piece-1\"}");
+        AtomicInteger executions = new AtomicInteger();
+
+        IdempotentResponse first = idempotencyService.execute(user.getId(), "pieces.receive", key,
+            firstPayload, () -> {
+                executions.incrementAndGet();
+                return new IdempotentResponse(201, responseBody);
+            });
+        IdempotentResponse replay = idempotencyService.execute(user.getId(), "pieces.receive", key,
+            reorderedPayload, () -> {
+                executions.incrementAndGet();
+                return new IdempotentResponse(201, responseBody);
+            });
+
+        assertThat(replay).isEqualTo(first);
+        assertThat(executions).hasValue(1);
+        assertThatThrownBy(() -> idempotencyService.execute(user.getId(), "pieces.receive", key,
+            conflictingPayload, () -> new IdempotentResponse(201, responseBody)))
+            .isInstanceOfSatisfying(ApiException.class, exception -> {
+                assertThat(exception.getStatus()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT);
+                assertThat(exception.getCode()).isEqualTo("IDEMPOTENCY_KEY_REUSED");
+            });
+        assertThat(idempotencyKeyRepository.findByUserIdAndIdempotencyKey(user.getId(),
+            "pieces.receive:" + key)).get()
+            .extracting(IdempotencyKeyEntity::getResponseStatus)
+            .isEqualTo((short) 201);
+        }
+
+        @Test
+        void expiredIdempotencyKeyCanBeClaimedAgain() throws Exception {
+        UserEntity user = createAuthUser(Role.STAFF, true, "CorrectHorseBattery77!");
+        String key = "expired-" + UUID.randomUUID();
+        var payload = objectMapper.readTree("{\"type\":\"Brinco\"}");
+        AtomicInteger executions = new AtomicInteger();
+        var action = (java.util.function.Supplier<IdempotentResponse>) () -> {
+            int execution = executions.incrementAndGet();
+            return new IdempotentResponse(201,
+                objectMapper.valueToTree(Map.of("execution", execution)));
+        };
+
+        idempotencyService.execute(user.getId(), "pieces.receive", key, payload, action);
+        jdbcTemplate.update("UPDATE idempotency_keys SET created_at = now() - interval '2 seconds', "
+            + "expires_at = now() - interval '1 second' "
+            + "WHERE user_id = ? AND idempotency_key = ?", user.getId(), "pieces.receive:" + key);
+        IdempotentResponse second = idempotencyService.execute(
+            user.getId(), "pieces.receive", key, payload, action);
+
+        assertThat(executions).hasValue(2);
+        assertThat(second.body().path("execution").asInt()).isEqualTo(2);
         }
 
     @Test
