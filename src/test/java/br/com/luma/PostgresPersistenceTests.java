@@ -3,6 +3,7 @@ package br.com.luma;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -35,6 +36,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.JwtClaimsSet;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
@@ -74,6 +76,7 @@ import br.com.luma.setting.mapper.SettingsMapper;
 import br.com.luma.setting.repository.SettingsRepository;
 import br.com.luma.seller.entity.SellerEntity;
 import br.com.luma.seller.repository.SellerRepository;
+import br.com.luma.seller.service.SellerApplicationService;
 import br.com.luma.shared.ConsignmentItemStatus;
 import br.com.luma.shared.ConsignmentStatus;
 import br.com.luma.shared.PieceStage;
@@ -132,6 +135,9 @@ class PostgresPersistenceTests {
 
     @Autowired
     private SellerRepository sellerRepository;
+
+    @Autowired
+    private SellerApplicationService sellerApplicationService;
 
     @Autowired
     private PieceRepository pieceRepository;
@@ -284,6 +290,250 @@ class PostgresPersistenceTests {
                 .isNotNull();
     }
 
+            @Test
+            void sellerMutationsAreOwnerOnlyAndCreateReplaysIdempotently() throws Exception {
+            UserEntity owner = createAuthUser(Role.OWNER, true, "CorrectHorseBattery77!");
+            UserEntity staff = createAuthUser(Role.STAFF, true, "CorrectHorseBattery77!");
+            String ownerToken = login(owner.getEmail(), "CorrectHorseBattery77!").path("accessToken").asText();
+            String staffToken = login(staff.getEmail(), "CorrectHorseBattery77!").path("accessToken").asText();
+            String key = "seller-create-" + UUID.randomUUID();
+            Map<String, Object> request = Map.of("name", "Seller " + UUID.randomUUID(),
+                "phone", "11999990000", "commissionRate", 30);
+
+            MvcResult first = mockMvc.perform(post("/api/v1/sellers")
+                    .header("Authorization", "Bearer " + ownerToken)
+                    .header("Idempotency-Key", key)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(objectMapper.writeValueAsBytes(request)))
+                .andExpect(status().isCreated())
+                .andReturn();
+            String sellerId = objectMapper.readTree(first.getResponse().getContentAsString()).path("id").asText();
+
+            mockMvc.perform(post("/api/v1/sellers")
+                    .header("Authorization", "Bearer " + ownerToken)
+                    .header("Idempotency-Key", key)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(objectMapper.writeValueAsBytes(request)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.id").value(sellerId));
+
+            mockMvc.perform(patch("/api/v1/sellers/{sellerId}", sellerId)
+                    .header("Authorization", "Bearer " + ownerToken)
+                    .header("Idempotency-Key", "deactivate-" + UUID.randomUUID())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(objectMapper.writeValueAsBytes(Map.of("status", "inativa"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("inativa"));
+
+            mockMvc.perform(patch("/api/v1/sellers/{sellerId}", sellerId)
+                    .header("Authorization", "Bearer " + ownerToken)
+                    .header("Idempotency-Key", "reactivate-" + UUID.randomUUID())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(objectMapper.writeValueAsBytes(Map.of("status", "ativa"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ativa"));
+
+            mockMvc.perform(post("/api/v1/sellers")
+                    .header("Authorization", "Bearer " + staffToken)
+                    .header("Idempotency-Key", "staff-" + UUID.randomUUID())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(objectMapper.writeValueAsBytes(request)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+
+            mockMvc.perform(get("/api/v1/sellers")
+                    .header("Authorization", "Bearer " + staffToken)
+                    .param("q", request.get("name").toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].seller.id").value(sellerId));
+            }
+
+            @Test
+            void sellerAndSettingsRejectCommissionAndTermValuesOutsideConfiguredRules() throws Exception {
+            UserEntity owner = createAuthUser(Role.OWNER, true, "CorrectHorseBattery77!");
+            String ownerToken = login(owner.getEmail(), "CorrectHorseBattery77!").path("accessToken").asText();
+
+            mockMvc.perform(post("/api/v1/sellers")
+                    .header("Authorization", "Bearer " + ownerToken)
+                    .header("Idempotency-Key", "bad-seller-" + UUID.randomUUID())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(objectMapper.writeValueAsBytes(Map.of(
+                        "name", "Invalid seller", "phone", "", "commissionRate", 32))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+
+            mockMvc.perform(patch("/api/v1/settings")
+                    .header("Authorization", "Bearer " + ownerToken)
+                    .header("Idempotency-Key", "bad-settings-" + UUID.randomUUID())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(objectMapper.writeValueAsBytes(Map.of(
+                        "defaultCommissionRate", 32,
+                        "paymentTerms", List.of(30, 45),
+                        "defaultConsignmentDays", 30,
+                        "timezone", "America/Sao_Paulo"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+
+            mockMvc.perform(patch("/api/v1/settings")
+                    .header("Authorization", "Bearer " + ownerToken)
+                    .header("Idempotency-Key", "bad-zone-" + UUID.randomUUID())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(objectMapper.writeValueAsBytes(Map.of(
+                        "defaultCommissionRate", 35,
+                        "paymentTerms", List.of(30, 90),
+                        "defaultConsignmentDays", 30,
+                        "timezone", "Not/A_Timezone"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fields.timezone").exists());
+            }
+
+    @Test
+    void staleSellerUpdateFailsWithOptimisticLockConflict() {
+        SellerEntity seller = new SellerEntity();
+        seller.setName("Concurrent seller " + UUID.randomUUID());
+        seller.setPhone("111");
+        seller.setCommissionRate(30);
+        seller.setStatus(SellerStatus.ATIVA);
+        seller = sellerRepository.saveAndFlush(seller);
+        UUID sellerId = seller.getId();
+
+        SellerEntity staleCopy = sellerRepository.findById(sellerId).orElseThrow();
+        SellerEntity currentCopy = sellerRepository.findById(sellerId).orElseThrow();
+        currentCopy.setPhone("222");
+        sellerRepository.saveAndFlush(currentCopy);
+
+        staleCopy.setPhone("333");
+        assertThatThrownBy(() -> sellerRepository.saveAndFlush(staleCopy))
+                .isInstanceOf(org.springframework.orm.ObjectOptimisticLockingFailureException.class);
+    }
+
+    @Test
+    @WithMockUser(roles = "STAFF")
+    void inactiveSellerIsRejectedByConsignmentPrecondition() {
+        SellerEntity inactive = new SellerEntity();
+        inactive.setName("Inactive seller " + UUID.randomUUID());
+        inactive.setPhone("11999990000");
+        inactive.setCommissionRate(30);
+        inactive.setStatus(SellerStatus.INATIVA);
+        inactive = sellerRepository.saveAndFlush(inactive);
+        UUID inactiveSellerId = inactive.getId();
+
+        assertThatThrownBy(() -> sellerApplicationService.requireActiveForConsignment(inactiveSellerId))
+                .isInstanceOfSatisfying(ApiException.class, exception -> {
+                    assertThat(exception.getStatus()).isEqualTo(org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY);
+                    assertThat(exception.getCode()).isEqualTo("SELLER_INACTIVE");
+                });
+
+        UserEntity owner = createAuthUser(Role.OWNER, true, "CorrectHorseBattery77!");
+        SellerEntity inactiveSeller = sellerRepository.findById(inactiveSellerId).orElseThrow();
+        assertThatThrownBy(() -> createConsignment(owner, inactiveSeller,
+            "C-" + UUID.randomUUID().toString().substring(0, 8)))
+            .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+            @Test
+            void settingsCanBeUpdatedAndSellerCommissionUsesImmutableSnapshot() throws Exception {
+            UserEntity owner = createAuthUser(Role.OWNER, true, "CorrectHorseBattery77!");
+            String ownerToken = login(owner.getEmail(), "CorrectHorseBattery77!").path("accessToken").asText();
+
+            mockMvc.perform(patch("/api/v1/settings")
+                    .header("Authorization", "Bearer " + ownerToken)
+                    .header("Idempotency-Key", "valid-settings-" + UUID.randomUUID())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(objectMapper.writeValueAsBytes(Map.of(
+                        "defaultCommissionRate", 35,
+                        "paymentTerms", List.of(30, 90),
+                        "defaultConsignmentDays", 45,
+                        "timezone", "America/Sao_Paulo"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.defaultCommissionRate").value(35))
+                .andExpect(jsonPath("$.paymentTerms[1]").value(90));
+
+            SellerEntity seller = new SellerEntity();
+            seller.setName("Snapshot seller " + UUID.randomUUID());
+            seller.setPhone("11999990000");
+            seller.setCommissionRate(30);
+            seller.setStatus(SellerStatus.ATIVA);
+            seller = sellerRepository.saveAndFlush(seller);
+            UUID sellerId = seller.getId();
+
+            ConsignmentEntity soldConsignment = new ConsignmentEntity();
+            soldConsignment.setCode("C-" + UUID.randomUUID().toString().substring(0, 8));
+            soldConsignment.setSeller(seller);
+            soldConsignment.setDeliveredAt(Instant.parse("2026-01-01T03:00:00Z"));
+            soldConsignment.setDueAt(Instant.parse("2026-01-31T03:00:00Z"));
+            soldConsignment.setStatus(ConsignmentStatus.QUITADA);
+            soldConsignment.setCreatedBy(owner);
+            soldConsignment = consignmentRepository.saveAndFlush(soldConsignment);
+
+            PieceEntity soldPiece = new PieceEntity();
+            soldPiece.setCode("LU-" + UUID.randomUUID().toString().substring(0, 8));
+            soldPiece.setType("Anel");
+            soldPiece.setValueCents(10001);
+            soldPiece.setStatus(PieceStage.VENDIDA);
+            soldPiece.setCurrentLocation("Vendida");
+            soldPiece = pieceRepository.saveAndFlush(soldPiece);
+
+            ConsignmentItemEntity soldItem = new ConsignmentItemEntity();
+            soldItem.setConsignment(soldConsignment);
+            soldItem.setPiece(soldPiece);
+            soldItem.setCodeSnapshot(soldPiece.getCode());
+            soldItem.setTypeSnapshot(soldPiece.getType());
+            soldItem.setValueCentsSnapshot(10001);
+            soldItem.setCommissionRateSnapshot(30);
+            soldItem.setStatus(ConsignmentItemStatus.VENDIDA);
+            soldItem.setSoldAt(Instant.parse("2026-01-01T03:00:00Z"));
+            consignmentItemRepository.saveAndFlush(soldItem);
+
+            ConsignmentEntity openConsignment = new ConsignmentEntity();
+            openConsignment.setCode("C-" + UUID.randomUUID().toString().substring(0, 8));
+            openConsignment.setSeller(seller);
+            openConsignment.setDeliveredAt(Instant.now().minusSeconds(3600));
+            openConsignment.setDueAt(Instant.now().plusSeconds(86400));
+            openConsignment.setStatus(ConsignmentStatus.ABERTA);
+            openConsignment.setCreatedBy(owner);
+            openConsignment = consignmentRepository.saveAndFlush(openConsignment);
+
+            PieceEntity inHandPiece = new PieceEntity();
+            inHandPiece.setCode("LU-" + UUID.randomUUID().toString().substring(0, 8));
+            inHandPiece.setType("Colar");
+            inHandPiece.setValueCents(8490);
+            inHandPiece.setStatus(PieceStage.CONSIGNACAO);
+            inHandPiece.setCurrentLocation(seller.getName());
+            inHandPiece = pieceRepository.saveAndFlush(inHandPiece);
+
+            ConsignmentItemEntity inHandItem = new ConsignmentItemEntity();
+            inHandItem.setConsignment(openConsignment);
+            inHandItem.setPiece(inHandPiece);
+            inHandItem.setCodeSnapshot(inHandPiece.getCode());
+            inHandItem.setTypeSnapshot(inHandPiece.getType());
+            inHandItem.setValueCentsSnapshot(8490);
+            inHandItem.setCommissionRateSnapshot(35);
+            inHandItem.setStatus(ConsignmentItemStatus.COM_VENDEDORA);
+            consignmentItemRepository.saveAndFlush(inHandItem);
+
+            SettingsEntity settings = settingsRepository.findFirstBySingletonKeyTrue().orElseThrow();
+            settings.setDefaultCommissionRate(40);
+            settingsRepository.saveAndFlush(settings);
+
+            mockMvc.perform(get("/api/v1/sellers/{sellerId}/commission", sellerId)
+                    .header("Authorization", "Bearer " + ownerToken)
+                    .param("from", "2026-01-01")
+                    .param("to", "2026-01-01"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.soldCount").value(1))
+                .andExpect(jsonPath("$.soldValueCents").value(10001))
+                .andExpect(jsonPath("$.commissionCents").value(3000));
+
+            mockMvc.perform(get("/api/v1/sellers/{sellerId}/stats", sellerId)
+                    .header("Authorization", "Bearer " + ownerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.inHand").value(1))
+                .andExpect(jsonPath("$.inHandValueCents").value(8490))
+                .andExpect(jsonPath("$.totalSoldCount").value(1))
+                .andExpect(jsonPath("$.totalCommissionCents").value(3000));
+            }
+
         @Test
         void logoutRevokesRefreshToken() throws Exception {
         UserEntity user = createAuthUser(Role.STAFF, true, "CorrectHorseBattery77!");
@@ -339,7 +589,8 @@ class PostgresPersistenceTests {
             .andExpect(status().isForbidden());
         mockMvc.perform(get("/api/v1/settings")
                 .header("Authorization", "Bearer " + ownerLogin.path("accessToken").asText()))
-            .andExpect(status().isNotFound());
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.commissionMin").value(25));
         mockMvc.perform(get("/api/v1/pieces"))
             .andExpect(status().isUnauthorized());
 
@@ -777,7 +1028,7 @@ class PostgresPersistenceTests {
                 .extracting(RefreshTokenEntity::getReplacedBy)
                 .isEqualTo(current);
 
-            SettingsEntity settings = new SettingsEntity();
+            SettingsEntity settings = settingsRepository.findFirstBySingletonKeyTrue().orElseThrow();
             settings.setCommissionMin(25);
             settings.setCommissionMax(40);
             settings.setCommissionStep(5);
@@ -787,7 +1038,6 @@ class PostgresPersistenceTests {
             settings.setTimezone("America/Sao_Paulo");
             settings.setUpdatedAt(now);
             settings.setUpdatedBy(user);
-            settings = settingsRepository.saveAndFlush(settings);
 
             assertThat(settingsMapper.toResponse(settings).updatedById()).isEqualTo(user.getId());
             assertThat(settingsRepository.findFirstBySingletonKeyTrue()).get()
