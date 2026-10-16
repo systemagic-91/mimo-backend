@@ -13,6 +13,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.validation.BindException;
@@ -86,6 +87,12 @@ public class ApiExceptionHandler {
     ResponseEntity<ProblemDetail> handleNotFound(NoResourceFoundException exception, HttpServletRequest request) {
         return response(HttpStatus.NOT_FOUND, "NOT_FOUND", "O recurso solicitado não foi encontrado.", Map.of(), request);
     }
+
+        @ExceptionHandler(AccessDeniedException.class)
+        ResponseEntity<ProblemDetail> handleAccessDenied(AccessDeniedException exception, HttpServletRequest request) {
+                return response(HttpStatus.FORBIDDEN, "FORBIDDEN", "Você não tem permissão para acessar este recurso.",
+                                Map.of(), request);
+        }
 
     @ExceptionHandler({ DataIntegrityViolationException.class, ObjectOptimisticLockingFailureException.class,
             PessimisticLockingFailureException.class })
