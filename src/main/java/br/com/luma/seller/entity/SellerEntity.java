@@ -1,7 +1,7 @@
 package br.com.luma.seller.entity;
 
 import br.com.luma.shared.SellerStatus;
-import br.com.luma.shared.entity.TimestampedEntity;
+import br.com.luma.shared.entity.VersionedEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -16,7 +16,7 @@ import lombok.Setter;
 @Entity
 @Table(name = "sellers")
 @NoArgsConstructor
-public class SellerEntity extends TimestampedEntity {
+public class SellerEntity extends VersionedEntity {
 
     @Column(nullable = false, length = 120)
     private String name;

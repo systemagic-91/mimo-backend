@@ -14,6 +14,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import jakarta.persistence.Version;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -52,6 +53,10 @@ public class SettingsEntity extends BaseEntity {
 
     @Column(name = "updated_at", nullable = false)
     private java.time.Instant updatedAt;
+
+    @Version
+    @Column(nullable = false)
+    private long version;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "updated_by")
