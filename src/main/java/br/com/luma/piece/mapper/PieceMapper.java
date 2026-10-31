@@ -1,12 +1,15 @@
 package br.com.luma.piece.mapper;
 
 import org.mapstruct.Mapper;
+import org.mapstruct.Mapping;
 
 import br.com.luma.config.MapStructConfiguration;
 import br.com.luma.piece.entity.PieceEntity;
 import br.com.luma.shared.dto.PieceResponse;
+import br.com.luma.upload.PhotoUrls;
 
-@Mapper(config = MapStructConfiguration.class)
+@Mapper(config = MapStructConfiguration.class, imports = PhotoUrls.class)
 public interface PieceMapper {
+    @Mapping(target = "photoUrl", expression = "java(PhotoUrls.of(piece.getPhotoId()))")
     PieceResponse toResponse(PieceEntity piece);
 }

@@ -35,6 +35,7 @@ import br.com.luma.shared.dto.PieceResponse;
 import br.com.luma.shared.exception.ApiException;
 import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
+import br.com.luma.upload.service.PhotoApplicationService;
 
 @Service
 public class PieceApplicationService {
@@ -48,19 +49,22 @@ public class PieceApplicationService {
     private final PieceMapper pieceMapper;
     private final PieceEventMapper pieceEventMapper;
     private final IdempotencyService idempotencyService;
+    private final PhotoApplicationService photoService;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
     public PieceApplicationService(PieceRepository pieceRepository, PieceEventRepository pieceEventRepository,
             UserRepository userRepository, PieceMapper pieceMapper, PieceEventMapper pieceEventMapper,
-            IdempotencyService idempotencyService, JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, Clock clock) {
+            IdempotencyService idempotencyService, PhotoApplicationService photoService, JdbcTemplate jdbcTemplate,
+            ObjectMapper objectMapper, Clock clock) {
         this.pieceRepository = pieceRepository;
         this.pieceEventRepository = pieceEventRepository;
         this.userRepository = userRepository;
         this.pieceMapper = pieceMapper;
         this.pieceEventMapper = pieceEventMapper;
         this.idempotencyService = idempotencyService;
+        this.photoService = photoService;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -152,14 +156,17 @@ public class PieceApplicationService {
                 throw new ApiException(HttpStatus.CONFLICT, "INVALID_PIECE_TRANSITION",
                         "A peça precisa estar em BANHO_OURO para ser etiquetada.");
             }
+            if (request.photoId() != null) {
+                photoService.requireExisting(request.photoId());
+            }
 
             Instant occurredAt = nextEventTime(piece.getId());
             piece.setType(request.type().trim());
             piece.setValueCents(request.valueCents());
             piece.setStatus(PieceStage.ETIQUETADA);
             piece.setCurrentLocation("Estoque");
-            if (request.photoUrl() != null) {
-                piece.setPhotoUrl(normalizeOptional(request.photoUrl()));
+            if (request.photoId() != null) {
+                piece.setPhotoId(request.photoId());
             }
             if (request.note() != null) {
                 piece.setNote(normalizeOptional(request.note()));

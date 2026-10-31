@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -45,6 +46,7 @@ import br.com.luma.shared.dto.PaginationRequest;
 import br.com.luma.shared.exception.ApiException;
 import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
+import br.com.luma.upload.service.PhotoApplicationService;
 
 @ExtendWith(MockitoExtension.class)
 class PieceApplicationServiceTests {
@@ -65,6 +67,8 @@ class PieceApplicationServiceTests {
     @Mock
     private IdempotencyService idempotencyService;
     @Mock
+    private PhotoApplicationService photoService;
+    @Mock
     private JdbcTemplate jdbcTemplate;
 
     private PieceApplicationService service;
@@ -72,7 +76,7 @@ class PieceApplicationServiceTests {
     @BeforeEach
     void setUp() {
         service = new PieceApplicationService(pieceRepository, pieceEventRepository, userRepository, pieceMapper,
-                pieceEventMapper, idempotencyService, jdbcTemplate, new ObjectMapper(),
+                pieceEventMapper, idempotencyService, photoService, jdbcTemplate, new ObjectMapper(),
                 Clock.fixed(NOW, ZoneOffset.UTC));
         lenient().when(idempotencyService.execute(any(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> invocation.<Supplier<IdempotentResponse>>getArgument(4).get());
@@ -121,11 +125,12 @@ class PieceApplicationServiceTests {
     @Test
     void labelingUpdatesTheSamePieceAndKeepsItsCode() {
         PieceEntity piece = piece(PieceStage.BANHO_OURO);
+        UUID photoId = UUID.randomUUID();
         when(pieceEventRepository.findFirstByPiece_IdOrderByOccurredAtDescIdDesc(piece.getId()))
                 .thenReturn(Optional.empty());
 
         IdempotentResponse response = service.label(ACTOR_ID, "key", new LabelPieceRequest(piece.getId(),
-                "Pulseira", 25_000, "https://cdn.example/photo.jpg", " Retorno ok ", true));
+                "Pulseira", 25_000, photoId, " Retorno ok ", true));
 
         assertThat(response.status()).isEqualTo(200);
         verify(pieceRepository).save(piece);
@@ -133,7 +138,8 @@ class PieceApplicationServiceTests {
         assertThat(piece.getStatus()).isEqualTo(PieceStage.ETIQUETADA);
         assertThat(piece.getCurrentLocation()).isEqualTo("Estoque");
         assertThat(piece.getValueCents()).isEqualTo(25_000);
-        assertThat(piece.getPhotoUrl()).isEqualTo("https://cdn.example/photo.jpg");
+        verify(photoService).requireExisting(photoId);
+        assertThat(piece.getPhotoId()).isEqualTo(photoId);
         assertThat(piece.getNote()).isEqualTo("Retorno ok");
         ArgumentCaptor<PieceEventEntity> event = ArgumentCaptor.forClass(PieceEventEntity.class);
         verify(pieceEventRepository).save(event.capture());
@@ -167,6 +173,33 @@ class PieceApplicationServiceTests {
                 new LabelPieceRequest(labeled.getId(), "Anel", 1_000, null, null, true)),
                 HttpStatus.CONFLICT, "INVALID_PIECE_TRANSITION");
         verify(pieceRepository, never()).save(any());
+    }
+
+    @Test
+    void labelingWithUnknownPhotoFailsWithoutSavingThePiece() {
+        PieceEntity piece = piece(PieceStage.BANHO_OURO);
+        UUID missingPhoto = UUID.randomUUID();
+        doThrow(new ApiException(HttpStatus.NOT_FOUND, "PHOTO_NOT_FOUND", "missing"))
+                .when(photoService).requireExisting(missingPhoto);
+
+        assertApiError(() -> service.label(ACTOR_ID, "key",
+                new LabelPieceRequest(piece.getId(), "Anel", 1_000, missingPhoto, null, true)),
+                HttpStatus.NOT_FOUND, "PHOTO_NOT_FOUND");
+        assertThat(piece.getStatus()).isEqualTo(PieceStage.BANHO_OURO);
+        assertThat(piece.getPhotoId()).isNull();
+        verify(pieceRepository, never()).save(any());
+    }
+
+    @Test
+    void labelingWithoutPhotoKeepsThePieceWithoutPhoto() {
+        PieceEntity piece = piece(PieceStage.BANHO_OURO);
+        when(pieceEventRepository.findFirstByPiece_IdOrderByOccurredAtDescIdDesc(piece.getId()))
+                .thenReturn(Optional.empty());
+
+        service.label(ACTOR_ID, "key", new LabelPieceRequest(piece.getId(), "Anel", 1_000, null, null, true));
+
+        assertThat(piece.getPhotoId()).isNull();
+        verify(photoService, never()).requireExisting(any());
     }
 
     @Test

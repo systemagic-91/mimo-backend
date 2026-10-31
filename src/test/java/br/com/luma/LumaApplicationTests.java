@@ -5,6 +5,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
+
+import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -15,6 +21,11 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+
+import br.com.luma.upload.service.PhotoApplicationService;
+import br.com.luma.upload.service.PhotoContent;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -29,6 +40,9 @@ class LumaApplicationTests {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @MockitoBean
+    private PhotoApplicationService photoService;
 
     @Test
     void contextStartsWithReplaceableTestDatabase() {
@@ -115,4 +129,26 @@ class LumaApplicationTests {
             .andExpect(result -> org.assertj.core.api.Assertions.assertThat(
                 result.getResponse().getContentAsString()).doesNotContain("not-an-email"));
         }
+
+    @Test
+    void photosArePublicAndCachedForever() throws Exception {
+        UUID photoId = UUID.randomUUID();
+        when(photoService.find(photoId)).thenReturn(new PhotoContent("image/webp", new byte[] { 1, 2, 3 }));
+
+        mockMvc.perform(get("/api/v1/photos/{photoId}", photoId))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("image/webp"))
+                .andExpect(content().bytes(new byte[] { 1, 2, 3 }))
+                .andExpect(header().string("Cache-Control", "public, max-age=31536000, immutable"))
+                .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+                .andExpect(header().doesNotExist("Pragma"));
+    }
+
+    @Test
+    void photoUploadRequiresAuthentication() throws Exception {
+        mockMvc.perform(multipart("/api/v1/uploads/piece-photo")
+                .file(new MockMultipartFile("file", "photo.png", "image/png", new byte[] { 1 }))
+                .header("Idempotency-Key", "upload-1"))
+                .andExpect(status().isUnauthorized());
+    }
 }

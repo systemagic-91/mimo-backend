@@ -2,6 +2,7 @@ package br.com.luma.piece.entity;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 import br.com.luma.shared.PieceStage;
 import br.com.luma.shared.entity.VersionedEntity;
@@ -41,8 +42,8 @@ public class PieceEntity extends VersionedEntity {
     @Column(name = "current_location", nullable = false, length = 120)
     private String currentLocation;
 
-    @Column(name = "photo_url", length = 2048)
-    private String photoUrl;
+    @Column(name = "photo_id")
+    private UUID photoId;
 
     @Column(length = 500)
     private String note;

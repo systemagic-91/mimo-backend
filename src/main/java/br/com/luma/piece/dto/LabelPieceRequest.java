@@ -13,7 +13,7 @@ public record LabelPieceRequest(
         @NotBlank @Pattern(regexp = "(?:Brinco|Colar|Pulseira|Anel|Pingente|Tornozeleira)")
         @Size(max = 80) String type,
         @Positive long valueCents,
-        @Size(max = 2048) String photoUrl,
+        UUID photoId,
         @Size(max = 500) String note,
         @NotNull Boolean backFromBath) {
 }

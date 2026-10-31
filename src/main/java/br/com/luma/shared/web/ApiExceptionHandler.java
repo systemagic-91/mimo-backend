@@ -16,6 +16,10 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.MissingRequestHeaderException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.validation.BindException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -25,6 +29,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import br.com.luma.shared.exception.ApiException;
+import br.com.luma.upload.service.PhotoApplicationService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 
@@ -77,10 +82,24 @@ public class ApiExceptionHandler {
     }
 
     @ExceptionHandler({ HttpMessageNotReadableException.class, MissingServletRequestParameterException.class,
-            MissingRequestHeaderException.class, MethodArgumentTypeMismatchException.class })
+            MissingRequestHeaderException.class, MethodArgumentTypeMismatchException.class,
+            MissingServletRequestPartException.class, MultipartException.class })
     ResponseEntity<ProblemDetail> handleInvalidRequest(Exception exception, HttpServletRequest request) {
         return response(HttpStatus.BAD_REQUEST, "INVALID_REQUEST",
                 "A requisição está malformada ou contém parâmetros inválidos.", Map.of(), request);
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    ResponseEntity<ProblemDetail> handleUploadTooLarge(MaxUploadSizeExceededException exception,
+            HttpServletRequest request) {
+        return handleApiException(PhotoApplicationService.photoTooLarge(), request);
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    ResponseEntity<ProblemDetail> handleUnsupportedMediaType(HttpMediaTypeNotSupportedException exception,
+            HttpServletRequest request) {
+        return response(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "UNSUPPORTED_MEDIA_TYPE",
+                "O Content-Type enviado não é aceito por este endpoint.", Map.of(), request);
     }
 
     @ExceptionHandler(NoResourceFoundException.class)
