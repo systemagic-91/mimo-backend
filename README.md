@@ -9,7 +9,7 @@ Backend base para a API Luma, usando Java 21, Spring Boot 3, Gradle e PostgreSQL
 3. Execute a aplicação com `./gradlew bootRun` (Windows: `gradlew.bat bootRun`).
 4. Execute os testes com `./gradlew clean test` (Windows: `gradlew.bat clean test`).
 
-O perfil padrão `local` lê as configurações do banco e do CORS a partir do ambiente. Os testes de contexto usam H2; os testes de integração com PostgreSQL iniciam o PostgreSQL 16 com Testcontainers quando o Docker estiver disponível. Para usar um banco de teste descartável já existente, defina `POSTGRES_TEST_URL`, `POSTGRES_TEST_USERNAME` e `POSTGRES_TEST_PASSWORD` antes de executar `./gradlew test`. As migrações do Flyway rodam contra esse banco, então não aponte essa configuração para dados que você precise manter. `DB_PORT` altera a porta host publicada pelo Compose.
+O perfil padrão `local` lê as configurações do banco e do CORS a partir do ambiente. Os testes não precisam de Docker nem de PostgreSQL: as regras de negócio são cobertas por testes unitários com JUnit 5 e Mockito (repositories mockados), e os testes de contexto/segurança HTTP usam H2 em memória. Testcontainers não é usado no projeto. `DB_PORT` altera a porta host publicada pelo Compose.
 
 As configurações do banco e do CORS de produção não possuem credenciais ou valores padrão versionados.
 
