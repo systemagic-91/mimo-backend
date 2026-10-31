@@ -43,6 +43,16 @@ class PaginationContractTests {
     }
 
     @Test
+    void sortDirectionSplitByQueryBindingIsRejoined() {
+        PaginationRequest request = new PaginationRequest();
+        request.setSort(List.of("code", "desc"));
+
+        var pageable = request.toPageable(Set.of("code"));
+
+        assertThat(pageable.getSort().getOrderFor("code").isDescending()).isTrue();
+    }
+
+    @Test
     void invalidPageSizeAndSortReturnStandardBadRequest() {
         PaginationRequest invalidSize = new PaginationRequest();
         invalidSize.setPageSize(201);

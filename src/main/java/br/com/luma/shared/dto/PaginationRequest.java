@@ -77,7 +77,20 @@ public class PaginationRequest {
     }
 
     public void setSort(List<String> sort) {
-        this.sort = sort == null ? new ArrayList<>() : new ArrayList<>(sort);
+        this.sort = new ArrayList<>();
+        if (sort == null) {
+            return;
+        }
+        for (String value : sort) {
+            int last = this.sort.size() - 1;
+            boolean splitDirection = last >= 0 && !this.sort.get(last).contains(",")
+                    && (value.trim().equalsIgnoreCase("asc") || value.trim().equalsIgnoreCase("desc"));
+            if (splitDirection) {
+                this.sort.set(last, this.sort.get(last) + "," + value);
+            } else {
+                this.sort.add(value);
+            }
+        }
     }
 
     private static ApiException invalid(String field, String message) {
