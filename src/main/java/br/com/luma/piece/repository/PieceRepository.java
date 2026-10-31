@@ -31,6 +31,6 @@ public interface PieceRepository extends JpaRepository<PieceEntity, UUID> {
     Optional<PieceEntity> findByIdForUpdate(@Param("id") UUID id);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("select piece from PieceEntity piece where piece.id in :ids")
+    @Query("select piece from PieceEntity piece where piece.id in :ids order by piece.id")
     List<PieceEntity> findAllForUpdate(@Param("ids") Collection<UUID> ids);
 }
