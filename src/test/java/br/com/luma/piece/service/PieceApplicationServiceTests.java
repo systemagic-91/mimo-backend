@@ -283,6 +283,21 @@ class PieceApplicationServiceTests {
     }
 
     @Test
+    void listSummarizesTheValueOfAllFilteredPiecesNotJustThePage() {
+        PieceEntity piece = piece(PieceStage.ETIQUETADA);
+        when(pieceRepository.search(eq("anel"), eq(PieceStage.ETIQUETADA), any()))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(piece),
+                        org.springframework.data.domain.PageRequest.of(0, 1), 3));
+        when(pieceRepository.sumValueCents("anel", PieceStage.ETIQUETADA)).thenReturn(45_000L);
+
+        var response = service.list(" anel ", PieceStage.ETIQUETADA, new PaginationRequest());
+
+        assertThat(response.items()).hasSize(1);
+        assertThat(response.pagination().total()).isEqualTo(3);
+        assertThat(response.summary().totalValueCents()).isEqualTo(45_000L);
+    }
+
+    @Test
     void ownerInformsTheFactoryCostOnReceiptAndTheChangeIsAudited() {
         allocateSequence(3L);
         when(costVisibility.currentUserIsOwner()).thenReturn(true);

@@ -23,10 +23,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 import br.com.luma.piece.dto.LabelPieceRequest;
 import br.com.luma.piece.dto.NextPieceCodeResponse;
+import br.com.luma.piece.dto.PieceListResponse;
 import br.com.luma.piece.dto.ReceivePieceRequest;
 import br.com.luma.piece.service.PieceApplicationService;
 import br.com.luma.shared.PieceStage;
-import br.com.luma.shared.dto.PageEnvelope;
 import br.com.luma.shared.dto.PaginationRequest;
 import br.com.luma.shared.dto.PieceEventResponse;
 import br.com.luma.shared.dto.PieceResponse;
@@ -54,8 +54,9 @@ public class PieceController {
     }
 
     @GetMapping
-    @Operation(summary = "Pesquisa e pagina peças do estoque")
-    public PageEnvelope<PieceResponse> list(
+    @Operation(summary = "Pesquisa e pagina peças do estoque",
+            description = "summary.totalValueCents soma o preço de todas as peças filtradas, não só as da página.")
+    public PieceListResponse list(
             @RequestParam(required = false) @Size(max = 120) String q,
             @RequestParam(required = false) PieceStage status,
             @Valid @ModelAttribute PaginationRequest pagination) {

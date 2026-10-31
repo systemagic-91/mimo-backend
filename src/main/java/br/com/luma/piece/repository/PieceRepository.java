@@ -17,14 +17,19 @@ import br.com.luma.shared.PieceStage;
 import jakarta.persistence.LockModeType;
 
 public interface PieceRepository extends JpaRepository<PieceEntity, UUID> {
+    // Mesmo filtro na busca paginada e na soma, para quantidade e valor nunca divergirem.
+    String SEARCH_FILTER = "where (:status is null or piece.status = :status) "
+            + "and (cast(:query as String) is null or lower(piece.code) like lower(concat('%', cast(:query as String), '%')) "
+            + "or lower(piece.type) like lower(concat('%', cast(:query as String), '%')))";
+
     Optional<PieceEntity> findByCode(String code);
 
-    @Query("select piece from PieceEntity piece "
-            + "where (:status is null or piece.status = :status) "
-            + "and (cast(:query as String) is null or lower(piece.code) like lower(concat('%', cast(:query as String), '%')) "
-            + "or lower(piece.type) like lower(concat('%', cast(:query as String), '%')))")
+    @Query("select piece from PieceEntity piece " + SEARCH_FILTER)
     Page<PieceEntity> search(@Param("query") String query, @Param("status") PieceStage status,
             Pageable pageable);
+
+    @Query("select coalesce(sum(piece.valueCents), 0) from PieceEntity piece " + SEARCH_FILTER)
+    long sumValueCents(@Param("query") String query, @Param("status") PieceStage status);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select piece from PieceEntity piece where piece.id = :id")

@@ -21,6 +21,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import br.com.luma.auth.repository.UserRepository;
 import br.com.luma.piece.dto.LabelPieceRequest;
+import br.com.luma.piece.dto.PieceListResponse;
 import br.com.luma.piece.dto.ReceivePieceRequest;
 import br.com.luma.piece.dto.ReceivePieceResponse;
 import br.com.luma.piece.entity.PieceEntity;
@@ -31,7 +32,6 @@ import br.com.luma.piece.repository.PieceEventRepository;
 import br.com.luma.piece.repository.PieceRepository;
 import br.com.luma.shared.PieceStage;
 import br.com.luma.shared.audit.AuditTrail;
-import br.com.luma.shared.dto.PageEnvelope;
 import br.com.luma.shared.dto.PaginationRequest;
 import br.com.luma.shared.dto.PieceEventResponse;
 import br.com.luma.shared.dto.PieceResponse;
@@ -84,7 +84,7 @@ public class PieceApplicationService {
     }
 
     @Transactional(readOnly = true)
-    public PageEnvelope<PieceResponse> list(String query, PieceStage status, PaginationRequest pagination) {
+    public PieceListResponse list(String query, PieceStage status, PaginationRequest pagination) {
         String normalizedQuery = query == null || query.isBlank() ? null : query.trim();
         if (normalizedQuery != null && normalizedQuery.length() > 120) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR",
@@ -95,7 +95,7 @@ public class PieceApplicationService {
         boolean showCosts = costVisibility.currentUserIsOwner();
         Page<PieceResponse> page = pieceRepository.search(normalizedQuery, status, pageable)
                 .map(piece -> toResponse(piece, showCosts));
-        return PageEnvelope.from(page);
+        return PieceListResponse.from(page, pieceRepository.sumValueCents(normalizedQuery, status));
     }
 
     @Transactional(readOnly = true)
