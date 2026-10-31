@@ -20,8 +20,8 @@ public interface SellerRepository extends JpaRepository<SellerEntity, UUID> {
     @Query("""
             select seller from SellerEntity seller
             where (:status is null or seller.status = :status)
-              and (:query is null or lower(seller.name) like lower(concat('%', :query, '%'))
-                   or seller.phone like concat('%', :query, '%'))
+              and (cast(:query as String) is null or lower(seller.name) like lower(concat('%', cast(:query as String), '%'))
+                   or seller.phone like concat('%', cast(:query as String), '%'))
             """)
     Page<SellerEntity> search(@Param("status") SellerStatus status, @Param("query") String query,
             Pageable pageable);

@@ -21,8 +21,8 @@ public interface PieceRepository extends JpaRepository<PieceEntity, UUID> {
 
     @Query("select piece from PieceEntity piece "
             + "where (:status is null or piece.status = :status) "
-            + "and (:query is null or lower(piece.code) like lower(concat('%', :query, '%')) "
-            + "or lower(piece.type) like lower(concat('%', :query, '%')))")
+            + "and (cast(:query as String) is null or lower(piece.code) like lower(concat('%', cast(:query as String), '%')) "
+            + "or lower(piece.type) like lower(concat('%', cast(:query as String), '%')))")
     Page<PieceEntity> search(@Param("query") String query, @Param("status") PieceStage status,
             Pageable pageable);
 
