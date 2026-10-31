@@ -1,15 +1,21 @@
-﻿# Mimo Backend
+# Mimo Backend
 
 Backend base para a API Luma, usando Java 21, Spring Boot 3, Gradle e PostgreSQL.
+
+Documentação de operação:
+
+- [RUNBOOK.md](RUNBOOK.md): variáveis de ambiente, primeiro owner, migrations, deploy no Railway, CI, backup/restauração e retenção de dados.
+- [TRACING.md](TRACING.md): como seguir uma requisição pelos logs com `traceId`.
+- [METRICAS.md](METRICAS.md): métricas técnicas e da loja em `/actuator/metrics` e `/actuator/prometheus`.
 
 ## Desenvolvimento local
 
 1. Copie o arquivo `.env.example` para `.env` e defina uma senha local do banco.
 2. Inicie o PostgreSQL com `docker compose up -d`.
 3. Execute a aplicação com `./gradlew bootRun` (Windows: `gradlew.bat bootRun`).
-4. Execute os testes com `./gradlew clean test` (Windows: `gradlew.bat clean test`).
+4. Execute os testes com `./gradlew clean check` (Windows: `gradlew.bat clean check`).
 
-O perfil padrão `local` lê as configurações do banco e do CORS a partir do ambiente. Os testes não precisam de Docker nem de PostgreSQL: as regras de negócio são cobertas por testes unitários com JUnit 5 e Mockito (repositories mockados), e os testes de contexto/segurança HTTP usam H2 em memória. Testcontainers não é usado no projeto. `DB_PORT` altera a porta host publicada pelo Compose.
+O perfil padrão `local` lê as configurações do banco e do CORS a partir do ambiente. Os testes não precisam de Docker nem de PostgreSQL: as regras de negócio são cobertas por testes unitários com JUnit 5 e Mockito (repositories mockados), e os testes de contexto/segurança HTTP usam H2 em memória. O projeto não usa Testcontainers nem testes integrados automatizados; constraints, triggers e migrations ficam garantidos pelo próprio PostgreSQL, e a BACK_10 passa a validar as migrations no CI contra um banco limpo. `DB_PORT` altera a porta host publicada pelo Compose.
 
 As configurações do banco e do CORS de produção não possuem credenciais ou valores padrão versionados.
 
@@ -62,11 +68,11 @@ VITE_API_BASE_URL=http://localhost:8080/api/v1
 
 O frontend atual persiste o refresh token em `sessionStorage`; não use credenciais reais de produção nesse fluxo até a troca por cookie HttpOnly.
 
-O health check está disponível em `/actuator/health`; a OpenAPI está em `/v3/api-docs` e a Swagger UI em `/swagger-ui/index.html`. Apenas o endpoint de health e a documentação da API são públicos; as demais rotas exigem um JWT válido.
+O health check está disponível em `/actuator/health`; a OpenAPI está em `/v3/api-docs` e a Swagger UI em `/swagger-ui/index.html`. São públicos apenas o health, a documentação da API, o login/refresh e o download de fotos (`GET /api/v1/photos/{id}`); as métricas (`/actuator/metrics`, `/actuator/prometheus`) exigem owner e as demais rotas exigem um JWT válido.
 
 ## Contratos HTTP
 
-Toda resposta inclui `X-Request-Id`. Os clientes podem enviar um identificador com 1 a 64 caracteres usando letras, dígitos, `.`, `_` ou `-`; valores inválidos são substituídos. O valor também é colocado no MDC de logging. Os erros usam `application/problem+json` com `code`, `requestId` e `fields` opcionais estáveis; erros internos nunca incluem mensagens de exceção ou stack traces na resposta.
+Toda resposta inclui `X-Request-Id` e `X-Trace-Id` (ver [TRACING.md](TRACING.md)). Os clientes podem enviar um identificador com 1 a 64 caracteres usando letras, dígitos, `.`, `_` ou `-`; valores inválidos são substituídos. O valor também é colocado no MDC de logging. Os erros usam `application/problem+json` com `code`, `requestId` e `fields` opcionais estáveis; erros internos nunca incluem mensagens de exceção ou stack traces na resposta.
 
 Os endpoints de listagem devem usar `PaginationRequest` e `PageEnvelope`: `page` é base 1, padrão 1; `pageSize` tem padrão 50 e é limitado a 200. Cada endpoint fornece sua própria lista permitida a `toPageable`, para que valores de ordenação enviados pelo cliente nunca sejam interpolados em SQL.
 
