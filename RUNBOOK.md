@@ -43,6 +43,7 @@ Na primeira vez, crie o owner (seção 3). Os testes não precisam de Docker:
 | `IDEMPOTENCY_CLEANUP_CRON` / `_ZONE` | Não | `0 30 3 * * *` / `America/Sao_Paulo` | Horário da limpeza das chaves |
 | `PHOTO_CLEANUP_CRON` / `_ZONE` | Não | `0 0 4 * * *` / `America/Sao_Paulo` | Horário da limpeza de fotos órfãs |
 | `TRACING_SAMPLING_PROBABILITY` | Não | `1.0` | Fração das requisições rastreadas (ver TRACING.md) |
+| `JAVA_TOOL_OPTIONS` | Não (recomendada no Railway) | nenhum | Opções da JVM para gastar menos memória (ver seção 5.1) |
 
 Nunca versione valores reais de `JWT_SECRET`, `DB_PASSWORD` ou senhas.
 
@@ -83,8 +84,9 @@ Os demais usuários são criados por um owner em `POST /api/v1/users`, com uma s
    DB_PASSWORD=${{Postgres.PGPASSWORD}}
    JWT_SECRET=<saída de: openssl rand -base64 32>
    CORS_ALLOWED_ORIGINS=https://<seu-front>.vercel.app
+   JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=75 -XX:+UseSerialGC -Xss512k -XX:TieredStopAtLevel=1 -XX:MaxMetaspaceSize=128m -XX:+ExitOnOutOfMemoryError
    ```
-   Os valores `${{Postgres.X}}` são referências do próprio Railway às variáveis do banco (o nome `Postgres` precisa ser o nome do serviço do banco no projeto).
+   Os valores `${{Postgres.X}}` são referências do próprio Railway às variáveis do banco (o nome `Postgres` precisa ser o nome do serviço do banco no projeto). O `JAVA_TOOL_OPTIONS` está explicado na seção 5.1.
 4. Garanta o **Java 21** no build. Se o build reclamar da versão do Java, defina a variável `NIXPACKS_JDK_VERSION=21` (ou a equivalente do builder em uso).
 5. Em **Settings → Deploy**, configure o **Healthcheck Path** como `/actuator/health`. O Railway só troca para a versão nova quando ela responder `UP`.
 6. Se o Railway não descobrir o comando de start, use:
@@ -96,6 +98,26 @@ Os demais usuários são criados por um owner em `POST /api/v1/users`, com uma s
 9. Confira o IP real: depois do primeiro login pela Vercel, a coluna `ip_address` do último `LOGIN_SUCCEEDED` em `audit_logs` deve ter o seu IP, e não o de um proxy. Se aparecer sempre o mesmo IP para todo mundo, o rate limit de login vai bloquear todos juntos.
 
 A porta é lida da variável `PORT`, que o Railway define (`server.port: ${PORT:8080}`).
+
+### 5.1 Memória da JVM (custo no Railway)
+
+O plano Hobby do Railway cobra pelo uso de RAM e CPU, e a maior parte do custo do backend é a memória da JVM. Sem limites, um Spring Boot facilmente passa de 400 MB. O `JAVA_TOOL_OPTIONS` é lido pela própria JVM ao subir, então não precisa mudar o comando de start.
+
+| Opção | O que faz |
+|---|---|
+| `-XX:MaxRAMPercentage=75` | O heap usa no máximo 75% da memória do container. O resto fica para metaspace, threads e o próprio processo |
+| `-XX:+UseSerialGC` | Coletor de lixo mais simples, que gasta menos memória e CPU que o G1. Com uma vCPU e pouco tráfego, as pausas são imperceptíveis |
+| `-Xss512k` | Pilha de cada thread com 512 KB em vez de 1 MB |
+| `-XX:TieredStopAtLevel=1` | Compila o código só no nível mais rápido do JIT: sobe mais rápido e usa menos CPU e memória, em troca de um pouco menos de desempenho em carga alta |
+| `-XX:MaxMetaspaceSize=128m` | Teto para a memória das classes carregadas. Evita que ela cresça sem limite |
+| `-XX:+ExitOnOutOfMemoryError` | Se faltar memória, o processo termina em vez de ficar travado. O Railway reinicia o serviço sozinho |
+
+Cuidados:
+
+- **Defina um limite de memória** no serviço (**Settings → Resources**, por exemplo 512 MB). O `MaxRAMPercentage` é calculado sobre a memória que o container enxerga; sem limite, a JVM pode se basear na memória da máquina inteira e o heap fica grande demais.
+- Se o processo começar a reiniciar com `OutOfMemoryError` nos logs, aumente o limite do serviço antes de mexer nas opções.
+- Confira o efeito na aba **Metrics** do serviço, comparando o uso de memória antes e depois.
+- O pool do banco (Hikari, 5 conexões) e as threads do Tomcat (20) também foram reduzidos no `application-prod.yml` pelo mesmo motivo.
 
 ## 6. Acompanhar a aplicação
 

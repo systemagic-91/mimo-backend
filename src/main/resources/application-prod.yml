@@ -4,6 +4,24 @@ spring:
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 2
+
+server:
+  tomcat:
+    threads:
+      max: 20
+      min-spare: 2
+
+# management:
+#   metrics:
+#     distribution:
+#       percentiles-histogram:
+#         http.server.requests: false
+#   tracing:
+#     sampling:
+#       probability: ${TRACING_SAMPLING_PROBABILITY:0.1}
 
 app:
   cors:
