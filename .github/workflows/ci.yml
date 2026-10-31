@@ -5,7 +5,8 @@ on:
   pull_request:
 
 jobs:
-  test:
+  build:
+    name: Testes e build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,4 +15,70 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew clean test
+      - name: Testes e verificações
+        run: ./gradlew clean check bootJar
+      - name: Publicar o .jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: mimo-backend-jar
+          path: build/libs/*.jar
+          if-no-files-found: error
+          retention-days: 14
+
+  migrations:
+    name: Migrations em PostgreSQL limpo
+    runs-on: ubuntu-latest
+    needs: build
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: luma
+          POSTGRES_USER: luma
+          POSTGRES_PASSWORD: luma-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U luma -d luma"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Baixar o .jar
+        uses: actions/download-artifact@v4
+        with:
+          name: mimo-backend-jar
+          path: build/libs
+      - name: Aplicar migrations e validar o schema
+        env:
+          SPRING_PROFILES_ACTIVE: prod
+          DB_URL: jdbc:postgresql://localhost:5432/luma
+          DB_USERNAME: luma
+          DB_PASSWORD: luma-ci
+          CORS_ALLOWED_ORIGINS: http://localhost
+        run: |
+          export JWT_SECRET="$(head -c 32 /dev/urandom | base64)"
+          JAR=$(ls build/libs/*.jar | head -n 1)
+          java -jar "$JAR" --server.port=8080 > app.log 2>&1 &
+          APP_PID=$!
+          for attempt in $(seq 1 60); do
+            if curl -fs http://localhost:8080/actuator/health | grep -q '"UP"'; then
+              echo "Migrations aplicadas e schema validado pelo Hibernate."
+              kill "$APP_PID"
+              exit 0
+            fi
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              echo "A aplicação não subiu (migration inválida ou schema divergente):"
+              tail -n 80 app.log
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Tempo esgotado esperando /actuator/health."
+          tail -n 80 app.log
+          kill "$APP_PID"
+          exit 1
