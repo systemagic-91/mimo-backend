@@ -25,6 +25,8 @@ Os JWTs de acesso usam HS256 com tempo de vida padrão de 15 minutos. Defina `JW
 
 A API retorna o refresh token no corpo da resposta para seguir o contrato atual. O frontend atual o mantém em `sessionStorage`; como o JavaScript consegue lê-lo, isso é um compromisso de desenvolvimento e deve ser substituído por um fluxo com cookie HttpOnly e contrato de CSRF/CORS antes da produção. Nunca registre tokens nos logs.
 
+Os demais usuários (staff e outros owners) são criados por um owner em `/api/v1/users`, com uma senha temporária que a pessoa é obrigada a trocar no primeiro login: até lá, só `GET /auth/me`, `POST /auth/change-password` e `POST /auth/logout` funcionam (`403 PASSWORD_CHANGE_REQUIRED` no resto). Desativar, mudar o papel ou redefinir a senha de alguém desloga essa pessoa na hora, e a loja nunca fica sem owner ativo (`422 LAST_OWNER`).
+
 Para provisionar o primeiro owner, defina `BOOTSTRAP_OWNER_ENABLED=true`, `BOOTSTRAP_OWNER_NAME`, `BOOTSTRAP_OWNER_EMAIL` e uma `BOOTSTRAP_OWNER_PASSWORD` de uso único com pelo menos 12 caracteres, e inicie a aplicação uma vez. O bootstrap recusa sobrescrever uma conta existente; remova as credenciais e desative a flag imediatamente depois.
 
 ### Primeiro owner

@@ -58,7 +58,7 @@ O sistema não cria nenhum usuário padrão. Para criar o primeiro owner:
 2. Confirme no log que a aplicação subiu e faça login.
 3. **Imediatamente** mude `BOOTSTRAP_OWNER_ENABLED=false` e apague `BOOTSTRAP_OWNER_PASSWORD`. O bootstrap nunca sobrescreve uma conta existente, mas a senha não deve ficar guardada no ambiente.
 
-Os demais usuários são criados pelo owner pela API (BACK_19).
+Os demais usuários são criados por um owner em `POST /api/v1/users`, com uma senha temporária entregue pessoalmente; a pessoa é obrigada a trocá-la no primeiro login. Se alguém esquecer a senha, um owner usa `POST /api/v1/users/{id}/reset-password` (não há recuperação por e-mail). Se o único owner esquecer a própria senha, não há rota para isso: rode o bootstrap de novo com outro e-mail para criar um owner novo e, com ele, redefina a senha da conta antiga.
 
 ## 4. Migrations do banco (Flyway)
 
