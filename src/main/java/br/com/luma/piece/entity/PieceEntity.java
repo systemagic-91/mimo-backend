@@ -48,6 +48,12 @@ public class PieceEntity extends VersionedEntity {
     @Column(length = 500)
     private String note;
 
+    @Column(name = "factory_cost_cents")
+    private Long factoryCostCents;
+
+    @Column(name = "bath_cost_cents")
+    private Long bathCostCents;
+
     @OneToMany(mappedBy = "piece", fetch = FetchType.LAZY, cascade = CascadeType.PERSIST)
     private List<PieceEventEntity> events = new ArrayList<>();
 }

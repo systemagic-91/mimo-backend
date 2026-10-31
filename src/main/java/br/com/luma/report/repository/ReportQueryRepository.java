@@ -34,6 +34,7 @@ public class ReportQueryRepository {
     public List<SaleRow> findSales(Instant fromInclusive, Instant toExclusive) {
         return jdbcTemplate.query("""
                 SELECT ci.code_snapshot, ci.type_snapshot, ci.value_cents_snapshot, ci.sold_at,
+                    ci.commission_rate_snapshot, p.factory_cost_cents, p.bath_cost_cents,
                     s.id AS seller_id, s.name AS seller_name,
                     COALESCE(label.labeled_at, p.created_at) AS labeled_at
                 FROM consignment_items ci
@@ -50,7 +51,10 @@ public class ReportQueryRepository {
                 (resultSet, rowNumber) -> new SaleRow(resultSet.getString("code_snapshot"),
                         resultSet.getString("type_snapshot"), resultSet.getLong("value_cents_snapshot"),
                         instant(resultSet, "sold_at"), resultSet.getObject("seller_id", UUID.class),
-                        resultSet.getString("seller_name"), instant(resultSet, "labeled_at")));
+                        resultSet.getString("seller_name"), instant(resultSet, "labeled_at"),
+                        resultSet.getInt("commission_rate_snapshot"),
+                        resultSet.getObject("factory_cost_cents", Long.class),
+                        resultSet.getObject("bath_cost_cents", Long.class)));
     }
 
     public List<StockRow> findLabeledPiecesLabeledBefore(Instant labeledBefore) {
@@ -117,7 +121,7 @@ public class ReportQueryRepository {
     }
 
     public record SaleRow(String code, String type, long valueCents, Instant soldAt, UUID sellerId,
-            String sellerName, Instant labeledAt) {
+            String sellerName, Instant labeledAt, int commissionRate, Long factoryCostCents, Long bathCostCents) {
     }
 
     public record StockRow(UUID id, String code, String type, long valueCents, Instant labeledAt) {

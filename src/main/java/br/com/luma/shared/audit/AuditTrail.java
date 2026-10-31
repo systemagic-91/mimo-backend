@@ -25,7 +25,13 @@ public class AuditTrail {
 
     public void record(UUID actorId, String action, String entityType, UUID entityId, String ipAddress,
             Map<String, Object> afterState) {
+        record(actorId, action, entityType, entityId, ipAddress, null, afterState);
+    }
+
+    public void record(UUID actorId, String action, String entityType, UUID entityId, String ipAddress,
+            Map<String, Object> beforeState, Map<String, Object> afterState) {
         AuditLogEntity event = new AuditLogEntity();
+        event.setBeforeState(beforeState);
         event.setActor(userRepository.getReferenceById(actorId));
         event.setAction(action);
         event.setEntityType(entityType);

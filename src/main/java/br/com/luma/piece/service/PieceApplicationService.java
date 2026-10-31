@@ -12,9 +12,11 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import br.com.luma.auth.repository.UserRepository;
@@ -44,6 +46,8 @@ public class PieceApplicationService {
 
     private static final Set<String> ALLOWED_SORT_FIELDS = Set.of(
             "code", "type", "valueCents", "status", "currentLocation", "createdAt", "updatedAt");
+    private static final String FACTORY_COST = "factoryCostCents";
+    private static final String BATH_COST = "bathCostCents";
 
     private final PieceRepository pieceRepository;
     private final PieceEventRepository pieceEventRepository;
@@ -54,6 +58,7 @@ public class PieceApplicationService {
     private final PhotoApplicationService photoService;
     private final AuditTrail auditTrail;
     private final BusinessMetrics metrics;
+    private final PieceCostVisibility costVisibility;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -61,7 +66,8 @@ public class PieceApplicationService {
     public PieceApplicationService(PieceRepository pieceRepository, PieceEventRepository pieceEventRepository,
             UserRepository userRepository, PieceMapper pieceMapper, PieceEventMapper pieceEventMapper,
             IdempotencyService idempotencyService, PhotoApplicationService photoService, AuditTrail auditTrail,
-            BusinessMetrics metrics, JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, Clock clock) {
+            BusinessMetrics metrics, PieceCostVisibility costVisibility, JdbcTemplate jdbcTemplate,
+            ObjectMapper objectMapper, Clock clock) {
         this.pieceRepository = pieceRepository;
         this.pieceEventRepository = pieceEventRepository;
         this.userRepository = userRepository;
@@ -71,6 +77,7 @@ public class PieceApplicationService {
         this.photoService = photoService;
         this.auditTrail = auditTrail;
         this.metrics = metrics;
+        this.costVisibility = costVisibility;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -85,13 +92,15 @@ public class PieceApplicationService {
                     java.util.Map.of("q", List.of("A busca deve ter no máximo 120 caracteres.")));
         }
         Pageable pageable = pagination.toPageable(ALLOWED_SORT_FIELDS);
-        Page<PieceResponse> page = pieceRepository.search(normalizedQuery, status, pageable).map(pieceMapper::toResponse);
+        boolean showCosts = costVisibility.currentUserIsOwner();
+        Page<PieceResponse> page = pieceRepository.search(normalizedQuery, status, pageable)
+                .map(piece -> toResponse(piece, showCosts));
         return PageEnvelope.from(page);
     }
 
     @Transactional(readOnly = true)
     public PieceResponse get(UUID pieceId) {
-        return pieceMapper.toResponse(findPiece(pieceId));
+        return toResponse(findPiece(pieceId), costVisibility.currentUserIsOwner());
     }
 
     @Transactional(readOnly = true)
@@ -114,6 +123,8 @@ public class PieceApplicationService {
     @Transactional
     public IdempotentResponse receive(UUID actorId, String idempotencyKey, ReceivePieceRequest request,
             String ipAddress) {
+        boolean owner = costVisibility.currentUserIsOwner();
+        requireOwnerForCosts(owner, request.factoryCostCents());
         return idempotencyService.execute(actorId, "pieces.receive", idempotencyKey, request, () -> {
             if (request.stage() != PieceStage.FABRICA && request.stage() != PieceStage.BANHO_OURO) {
                 throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_INITIAL_STAGE",
@@ -128,6 +139,7 @@ public class PieceApplicationService {
             piece.setStatus(request.stage());
             piece.setCurrentLocation(request.stage() == PieceStage.FABRICA ? "Fábrica" : "No banho de ouro");
             piece.setNote(normalizeOptional(request.note()));
+            piece.setFactoryCostCents(request.factoryCostCents());
             piece = pieceRepository.save(piece);
 
             List<PieceEventEntity> events = new ArrayList<>();
@@ -145,8 +157,9 @@ public class PieceApplicationService {
                     .map(pieceEventMapper::toResponse)
                     .toList();
             auditTrail.record(actorId, "PIECE_RECEIVED", "PIECE", piece.getId(), ipAddress, pieceState(piece));
+            auditCostChange(actorId, piece, null, null, ipAddress);
             metrics.pieceReceived();
-            ReceivePieceResponse response = new ReceivePieceResponse(pieceMapper.toResponse(piece), eventResponses);
+            ReceivePieceResponse response = new ReceivePieceResponse(toResponse(piece, owner), eventResponses);
             return new IdempotentResponse(201, objectMapper.valueToTree(response));
         });
     }
@@ -154,6 +167,8 @@ public class PieceApplicationService {
     @Transactional
     public IdempotentResponse label(UUID actorId, String idempotencyKey, LabelPieceRequest request,
             String ipAddress) {
+        boolean owner = costVisibility.currentUserIsOwner();
+        requireOwnerForCosts(owner, request.bathCostCents());
         return idempotencyService.execute(actorId, "pieces.label", idempotencyKey, request, () -> {
             if (!request.backFromBath()) {
                 throw new ApiException(HttpStatus.CONFLICT, "INVALID_PIECE_TRANSITION",
@@ -171,6 +186,11 @@ public class PieceApplicationService {
             }
 
             Instant occurredAt = nextEventTime(piece.getId());
+            Long previousFactoryCost = piece.getFactoryCostCents();
+            Long previousBathCost = piece.getBathCostCents();
+            if (request.bathCostCents() != null) {
+                piece.setBathCostCents(request.bathCostCents());
+            }
             piece.setType(request.type().trim());
             piece.setValueCents(request.valueCents());
             piece.setStatus(PieceStage.ETIQUETADA);
@@ -186,9 +206,96 @@ public class PieceApplicationService {
             PieceEventEntity event = createEvent(piece, PieceStage.ETIQUETADA, occurredAt, "Etiquetada", actorId);
             pieceEventRepository.save(event);
             auditTrail.record(actorId, "PIECE_LABELED", "PIECE", piece.getId(), ipAddress, pieceState(piece));
+            auditCostChange(actorId, piece, previousFactoryCost, previousBathCost, ipAddress);
             metrics.pieceLabeled();
-            return new IdempotentResponse(200, objectMapper.valueToTree(pieceMapper.toResponse(piece)));
+            return new IdempotentResponse(200, objectMapper.valueToTree(toResponse(piece, owner)));
         });
+    }
+
+    // Campo ausente não muda o custo; null limpa.
+    @Transactional
+    @PreAuthorize("hasRole('OWNER')")
+    public IdempotentResponse updateCosts(UUID actorId, UUID pieceId, String idempotencyKey, JsonNode request,
+            String ipAddress) {
+        CostPatch patch = parseCostPatch(request);
+        return idempotencyService.execute(actorId, "pieces.costs." + pieceId, idempotencyKey, request, () -> {
+            PieceEntity piece = pieceRepository.findByIdForUpdate(pieceId).orElseThrow(() -> pieceNotFound(pieceId));
+            Long previousFactoryCost = piece.getFactoryCostCents();
+            Long previousBathCost = piece.getBathCostCents();
+            if (patch.hasFactoryCost()) {
+                piece.setFactoryCostCents(patch.factoryCostCents());
+            }
+            if (patch.hasBathCost()) {
+                piece.setBathCostCents(patch.bathCostCents());
+            }
+            piece = pieceRepository.save(piece);
+            auditCostChange(actorId, piece, previousFactoryCost, previousBathCost, ipAddress);
+            return new IdempotentResponse(200, objectMapper.valueToTree(toResponse(piece, true)));
+        });
+    }
+
+    private PieceResponse toResponse(PieceEntity piece, boolean showCosts) {
+        PieceResponse response = pieceMapper.toResponse(piece);
+        return showCosts ? response : response.withoutCosts();
+    }
+
+    private static void requireOwnerForCosts(boolean owner, Long cost) {
+        if (cost != null && !owner) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "Somente o owner pode informar custos.");
+        }
+    }
+
+    private void auditCostChange(UUID actorId, PieceEntity piece, Long previousFactoryCost, Long previousBathCost,
+            String ipAddress) {
+        if (java.util.Objects.equals(previousFactoryCost, piece.getFactoryCostCents())
+                && java.util.Objects.equals(previousBathCost, piece.getBathCostCents())) {
+            return;
+        }
+        auditTrail.record(actorId, "PIECE_COSTS_UPDATED", "PIECE", piece.getId(), ipAddress,
+                costState(previousFactoryCost, previousBathCost),
+                costState(piece.getFactoryCostCents(), piece.getBathCostCents()));
+    }
+
+    private static java.util.Map<String, Object> costState(Long factoryCostCents, Long bathCostCents) {
+        java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
+        state.put(FACTORY_COST, factoryCostCents);
+        state.put(BATH_COST, bathCostCents);
+        return state;
+    }
+
+    private static CostPatch parseCostPatch(JsonNode request) {
+        if (request == null || !request.isObject()) {
+            throw validation("request", "Envie um objeto JSON com os custos.");
+        }
+        request.fieldNames().forEachRemaining(field -> {
+            if (!FACTORY_COST.equals(field) && !BATH_COST.equals(field)) {
+                throw validation(field, "Campo desconhecido.");
+            }
+        });
+        if (!request.has(FACTORY_COST) && !request.has(BATH_COST)) {
+            throw validation("request", "Informe factoryCostCents e/ou bathCostCents.");
+        }
+        return new CostPatch(request.has(FACTORY_COST), parseCost(request, FACTORY_COST),
+                request.has(BATH_COST), parseCost(request, BATH_COST));
+    }
+
+    private static Long parseCost(JsonNode request, String field) {
+        JsonNode value = request.get(field);
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (!value.isIntegralNumber() || !value.canConvertToLong() || value.longValue() < 0) {
+            throw validation(field, field + " deve ser um valor em centavos maior ou igual a zero, ou null.");
+        }
+        return value.longValue();
+    }
+
+    private static ApiException validation(String field, String message) {
+        return new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", message,
+                java.util.Map.of(field, List.of(message)));
+    }
+
+    private record CostPatch(boolean hasFactoryCost, Long factoryCostCents, boolean hasBathCost, Long bathCostCents) {
     }
 
     private static java.util.Map<String, Object> pieceState(PieceEntity piece) {

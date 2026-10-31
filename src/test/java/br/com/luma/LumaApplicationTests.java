@@ -217,6 +217,29 @@ class LumaApplicationTests {
     }
 
     @Test
+    void staffCannotSendOrChangePieceCosts() throws Exception {
+        mockMvc.perform(post("/api/v1/pieces/receive").with(role("STAFF")).header("Idempotency-Key", "k1")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"type\":\"Anel\",\"valueCents\":1000,\"stage\":\"FABRICA\",\"factoryCostCents\":300}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .patch("/api/v1/pieces/" + UUID.randomUUID() + "/costs").with(role("STAFF"))
+                .header("Idempotency-Key", "k2").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"bathCostCents\":100}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void negativeCostsAreRejectedByValidation() throws Exception {
+        mockMvc.perform(post("/api/v1/pieces/receive").with(role("OWNER")).header("Idempotency-Key", "k3")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"type\":\"Anel\",\"valueCents\":1000,\"stage\":\"FABRICA\",\"factoryCostCents\":-1}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+    }
+
+    @Test
     void staffCannotManageUsers() throws Exception {
         mockMvc.perform(get("/api/v1/users")).andExpect(status().isUnauthorized());
         mockMvc.perform(get("/api/v1/users").with(role("STAFF")))

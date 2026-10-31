@@ -58,7 +58,7 @@ class ReportApplicationServiceTests {
         TurnoverReportResponse response = service.turnover(LocalDate.of(2026, 10, 1), LocalDate.of(2026, 10, 31));
 
         assertThat(response.items()).isEmpty();
-        assertThat(response.summary()).isEqualTo(new TurnoverReportResponse.Summary(0, 0));
+        assertThat(response.summary()).isEqualTo(new TurnoverReportResponse.Summary(0, 0, null, 0));
     }
 
     @Test
@@ -82,7 +82,31 @@ class ReportApplicationServiceTests {
         TurnoverReportResponse response = service.turnover(LocalDate.of(2026, 10, 1), LocalDate.of(2026, 10, 31));
 
         assertThat(response.items()).extracting(TurnoverReportResponse.Row::daysToSell).containsExactly(1L, 0L, 30L);
-        assertThat(response.summary()).isEqualTo(new TurnoverReportResponse.Summary(3, 40_000));
+        assertThat(response.summary()).isEqualTo(new TurnoverReportResponse.Summary(3, 40_000, null, 3));
+    }
+
+    @Test
+    void turnoverMarginUsesOnlyPiecesWithBothCostsAndTheCommissionSnapshot() {
+        Instant from = Instant.parse("2026-10-01T03:00:00Z");
+        Instant to = Instant.parse("2026-11-01T03:00:00Z");
+        Instant soldAt = Instant.parse("2026-10-10T15:00:00Z");
+        Instant labeledAt = Instant.parse("2026-10-01T15:00:00Z");
+        UUID seller = UUID.randomUUID();
+        when(reportRepository.findSales(from, to)).thenReturn(List.of(
+                new SaleRow("LU-0001", "Anel", 10_000, soldAt, seller, "Ana", labeledAt, 30, 3_000L, 800L),
+                new SaleRow("LU-0002", "Anel", 5_001, soldAt, seller, "Ana", labeledAt, 25, 1_000L, 0L),
+                new SaleRow("LU-0003", "Anel", 8_000, soldAt, seller, "Ana", labeledAt, 30, 2_000L, null),
+                new SaleRow("LU-0004", "Anel", 7_000, soldAt, seller, "Ana", labeledAt, 40, null, null)));
+
+        TurnoverReportResponse response = service.turnover(LocalDate.of(2026, 10, 1), LocalDate.of(2026, 10, 31));
+
+        assertThat(response.items()).extracting(TurnoverReportResponse.Row::commissionCents)
+                .containsExactly(3_000L, 1_250L, 2_400L, 2_800L);
+        assertThat(response.items()).extracting(TurnoverReportResponse.Row::totalCostCents)
+                .containsExactly(3_800L, 1_000L, 2_000L, null);
+        assertThat(response.items()).extracting(TurnoverReportResponse.Row::marginCents)
+                .containsExactly(3_200L, 2_751L, null, null);
+        assertThat(response.summary()).isEqualTo(new TurnoverReportResponse.Summary(4, 30_001, 5_951L, 2));
     }
 
     @Test
@@ -158,7 +182,7 @@ class ReportApplicationServiceTests {
     }
 
     private static SaleRow sale(String code, long value, Instant labeledAt, Instant soldAt) {
-        return new SaleRow(code, "Brinco", value, soldAt, UUID.randomUUID(), "Ana", labeledAt);
+        return new SaleRow(code, "Brinco", value, soldAt, UUID.randomUUID(), "Ana", labeledAt, 30, null, null);
     }
 
     private static StockRow stock(String code, long value, Instant labeledAt) {

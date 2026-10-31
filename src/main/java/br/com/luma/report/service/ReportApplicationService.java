@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import br.com.luma.report.dto.OverdueReportResponse;
 import br.com.luma.report.dto.StalePiecesReportResponse;
+import br.com.luma.piece.service.PieceCosts;
 import br.com.luma.report.dto.TurnoverReportResponse;
 import br.com.luma.report.repository.ReportQueryRepository;
 import br.com.luma.report.repository.ReportQueryRepository.SaleRow;
@@ -56,10 +57,18 @@ public class ReportApplicationService {
                 .findSales(from.atStartOfDay(zone).toInstant(), to.plusDays(1).atStartOfDay(zone).toInstant())
                 .stream()
                 .map(sale -> new TurnoverReportResponse.Row(sale.code(), sale.type(), sale.valueCents(),
-                        sale.soldAt(), sale.sellerId(), sale.sellerName(), daysToSell(sale, zone)))
+                        sale.soldAt(), sale.sellerId(), sale.sellerName(), daysToSell(sale, zone),
+                        PieceCosts.commission(sale.valueCents(), sale.commissionRate()),
+                        PieceCosts.total(sale.factoryCostCents(), sale.bathCostCents()),
+                        PieceCosts.margin(sale.valueCents(), sale.commissionRate(), sale.factoryCostCents(),
+                                sale.bathCostCents())))
                 .toList();
         long soldValue = rows.stream().mapToLong(TurnoverReportResponse.Row::valueCents).sum();
-        return new TurnoverReportResponse(rows, new TurnoverReportResponse.Summary(rows.size(), soldValue));
+        List<Long> margins = rows.stream().map(TurnoverReportResponse.Row::marginCents)
+                .filter(java.util.Objects::nonNull).toList();
+        Long margin = margins.isEmpty() ? null : margins.stream().mapToLong(Long::longValue).sum();
+        return new TurnoverReportResponse(rows, new TurnoverReportResponse.Summary(rows.size(), soldValue, margin,
+                rows.size() - margins.size()));
     }
 
     @Transactional(readOnly = true)
