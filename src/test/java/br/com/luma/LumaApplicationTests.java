@@ -24,6 +24,12 @@ import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+
+import br.com.luma.dashboard.dto.DashboardResponse;
+import br.com.luma.dashboard.service.DashboardApplicationService;
+import br.com.luma.report.dto.OverdueReportResponse;
+import br.com.luma.report.service.ReportApplicationService;
 import br.com.luma.upload.service.PhotoApplicationService;
 import br.com.luma.upload.service.PhotoContent;
 
@@ -43,6 +49,50 @@ class LumaApplicationTests {
 
     @MockitoBean
     private PhotoApplicationService photoService;
+
+    @MockitoBean
+    private DashboardApplicationService dashboardService;
+
+    @MockitoBean
+    private ReportApplicationService reportService;
+
+    @Test
+    void staffCannotOpenDashboardOrReports() throws Exception {
+        for (String path : java.util.List.of("/api/v1/dashboard", "/api/v1/reports/overdue",
+                "/api/v1/reports/stale-pieces", "/api/v1/reports/turnover?from=2026-10-01&to=2026-10-31")) {
+            mockMvc.perform(get(path).with(role("STAFF")))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        }
+    }
+
+    @Test
+    void ownerOpensDashboardAndReports() throws Exception {
+        when(dashboardService.get()).thenReturn(new DashboardResponse(
+                new DashboardResponse.Kpis(0, 0, null, 0, 0, 0), java.util.Map.of(), java.util.List.of(),
+                java.util.List.of()));
+        when(reportService.overdue()).thenReturn(new OverdueReportResponse(java.util.List.of()));
+
+        mockMvc.perform(get("/api/v1/dashboard").with(role("OWNER")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.kpis.avgTurnoverDays").isEmpty());
+        mockMvc.perform(get("/api/v1/reports/overdue").with(role("OWNER")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void turnoverReportRequiresValidDates() throws Exception {
+        mockMvc.perform(get("/api/v1/reports/turnover?from=2026-10-01").with(role("OWNER")))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/v1/reports/turnover?from=01/10/2026&to=2026-10-31").with(role("OWNER")))
+                .andExpect(status().isBadRequest());
+    }
+
+    private static org.springframework.test.web.servlet.request.RequestPostProcessor role(String role) {
+        return org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt()
+                .jwt(token -> token.subject(UUID.randomUUID().toString()))
+                .authorities(new SimpleGrantedAuthority("ROLE_" + role));
+    }
 
     @Test
     void contextStartsWithReplaceableTestDatabase() {
