@@ -23,7 +23,9 @@ As configurações do banco e do CORS de produção não possuem credenciais ou 
 
 Os JWTs de acesso usam HS256 com tempo de vida padrão de 15 minutos. Defina `JWT_SECRET` como uma chave aleatória em Base64 com pelo menos 32 bytes em produção; os perfis local/teste geram uma chave efêmera quando ela não está definida, então os tokens deixam de funcionar após reinicialização. Os refresh tokens são opacos, armazenados apenas como hashes SHA-256, rotacionados no uso e revogados no logout, na troca de senha ou na detecção de reutilização. Um token reutilizado revoga todas as sessões de refresh ativas daquele usuário.
 
-A API retorna o refresh token no corpo da resposta para seguir o contrato atual. O frontend atual o mantém em `sessionStorage`; como o JavaScript consegue lê-lo, isso é um compromisso de desenvolvimento e deve ser substituído por um fluxo com cookie HttpOnly e contrato de CSRF/CORS antes da produção. Nunca registre tokens nos logs.
+O refresh token viaja só no cookie `luma_refresh` (`HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth`), que o JavaScript não consegue ler; ele nunca aparece no corpo das respostas. `POST /api/v1/auth/refresh` e `POST /api/v1/auth/logout` não têm corpo, leem o cookie e recusam com `403` um header `Origin` fora de `CORS_ALLOWED_ORIGINS`. O logout é público e funciona com o access token vencido. Nunca registre tokens nos logs.
+
+O backend roda com `server.forward-headers-strategy: framework`: atrás dos proxies da Vercel e do Railway, `getRemoteAddr()` devolve o IP real do `X-Forwarded-For`. O rate limit de login conta por IP e por e-mail.
 
 Os demais usuários (staff e outros owners) são criados por um owner em `/api/v1/users`, com uma senha temporária que a pessoa é obrigada a trocar no primeiro login: até lá, só `GET /auth/me`, `POST /auth/change-password` e `POST /auth/logout` funcionam (`403 PASSWORD_CHANGE_REQUIRED` no resto). Desativar, mudar o papel ou redefinir a senha de alguém desloga essa pessoa na hora, e a loja nunca fica sem owner ativo (`422 LAST_OWNER`).
 
@@ -68,9 +70,13 @@ Para a tela de login do frontend, configure `VITE_API_BASE_URL=http://localhost:
 VITE_API_BASE_URL=http://localhost:8080/api/v1
 ```
 
-O frontend atual persiste o refresh token em `sessionStorage`; não use credenciais reais de produção nesse fluxo até a troca por cookie HttpOnly.
+Pelo Swagger, o login grava o cookie no navegador. O `refresh` e o `logout` pelo Swagger respondem `403`, porque a origem `http://localhost:8080` não está em `CORS_ALLOWED_ORIGINS`; para testá-los com curl, mande o cookie sem o header `Origin`:
 
-O health check está disponível em `/actuator/health`; a OpenAPI está em `/v3/api-docs` e a Swagger UI em `/swagger-ui/index.html`. São públicos apenas o health, a documentação da API, o login/refresh e o download de fotos (`GET /api/v1/photos/{id}`); as métricas (`/actuator/metrics`, `/actuator/prometheus`) exigem owner e as demais rotas exigem um JWT válido.
+```bash
+curl -i -X POST http://localhost:8080/api/v1/auth/refresh --cookie "luma_refresh=<token>"
+```
+
+O health check está disponível em `/actuator/health`; a OpenAPI está em `/v3/api-docs` e a Swagger UI em `/swagger-ui/index.html`. São públicos apenas o health, a documentação da API, o login/refresh/logout e o download de fotos (`GET /api/v1/photos/{id}`); as métricas (`/actuator/metrics`, `/actuator/prometheus`) exigem owner e as demais rotas exigem um JWT válido.
 
 ## Contratos HTTP
 

@@ -34,7 +34,9 @@ Na primeira vez, crie o owner (seção 3). Os testes não precisam de Docker:
 | `JWT_ISSUER` | Não | `luma-api` | Emissor do token |
 | `JWT_ACCESS_TOKEN_TTL` / `JWT_REFRESH_TOKEN_TTL` | Não | `PT15M` / `P30D` | Validade dos tokens |
 | `BOOTSTRAP_OWNER_*` | Só na criação do primeiro owner | desligado | Ver seção 3 |
-| `LOGIN_MAX_ATTEMPTS` / `LOGIN_RATE_LIMIT_WINDOW` | Não | `5` / `PT15M` | Limite de tentativas de login por IP |
+| `LOGIN_MAX_ATTEMPTS` / `LOGIN_RATE_LIMIT_WINDOW` | Não | `5` / `PT15M` | Limite de tentativas de login, contado por IP e por e-mail |
+| `REFRESH_COOKIE_NAME` | Não | `luma_refresh` | Nome do cookie da sessão |
+| `REFRESH_COOKIE_SECURE` / `REFRESH_COOKIE_SAME_SITE` | Não | `true` / `Strict` | Atributos do cookie. Não mude em produção |
 | `UPLOAD_MAX_PER_WINDOW` / `UPLOAD_RATE_LIMIT_WINDOW` | Não | `30` / `PT1M` | Limite de uploads de foto por usuário |
 | `IDEMPOTENCY_TTL` | Não | `P1D` | Por quanto tempo uma `Idempotency-Key` repete a resposta |
 | `IDEMPOTENCY_RETENTION` | Não | `P7D` | Quanto tempo depois de vencer a chave é apagada |
@@ -90,7 +92,8 @@ Os demais usuários são criados por um owner em `POST /api/v1/users`, com uma s
    java -jar build/libs/mimo-backend-0.0.1-SNAPSHOT.jar
    ```
 7. Faça o primeiro deploy com o bootstrap do owner (seção 3) e depois desligue-o.
-8. Em **Settings → Networking**, gere o domínio público. Com a BACK_21/FRONT_22, o front chama a API pelo proxy `/api` da Vercel.
+8. Em **Settings → Networking**, gere o domínio público. O front chama a API pelo proxy `/api` da Vercel (FRONT_22), e `CORS_ALLOWED_ORIGINS` precisa ter exatamente a origem do front (`https://<seu-front>.vercel.app`, sem barra no fim): o refresh e o logout recusam qualquer outra.
+9. Confira o IP real: depois do primeiro login pela Vercel, a coluna `ip_address` do último `LOGIN_SUCCEEDED` em `audit_logs` deve ter o seu IP, e não o de um proxy. Se aparecer sempre o mesmo IP para todo mundo, o rate limit de login vai bloquear todos juntos.
 
 A porta é lida da variável `PORT`, que o Railway define (`server.port: ${PORT:8080}`).
 
