@@ -28,6 +28,7 @@ import br.com.luma.piece.mapper.PieceMapper;
 import br.com.luma.piece.repository.PieceEventRepository;
 import br.com.luma.piece.repository.PieceRepository;
 import br.com.luma.shared.PieceStage;
+import br.com.luma.shared.audit.AuditTrail;
 import br.com.luma.shared.dto.PageEnvelope;
 import br.com.luma.shared.dto.PaginationRequest;
 import br.com.luma.shared.dto.PieceEventResponse;
@@ -35,6 +36,7 @@ import br.com.luma.shared.dto.PieceResponse;
 import br.com.luma.shared.exception.ApiException;
 import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
+import br.com.luma.shared.metrics.BusinessMetrics;
 import br.com.luma.upload.service.PhotoApplicationService;
 
 @Service
@@ -50,14 +52,16 @@ public class PieceApplicationService {
     private final PieceEventMapper pieceEventMapper;
     private final IdempotencyService idempotencyService;
     private final PhotoApplicationService photoService;
+    private final AuditTrail auditTrail;
+    private final BusinessMetrics metrics;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
     public PieceApplicationService(PieceRepository pieceRepository, PieceEventRepository pieceEventRepository,
             UserRepository userRepository, PieceMapper pieceMapper, PieceEventMapper pieceEventMapper,
-            IdempotencyService idempotencyService, PhotoApplicationService photoService, JdbcTemplate jdbcTemplate,
-            ObjectMapper objectMapper, Clock clock) {
+            IdempotencyService idempotencyService, PhotoApplicationService photoService, AuditTrail auditTrail,
+            BusinessMetrics metrics, JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, Clock clock) {
         this.pieceRepository = pieceRepository;
         this.pieceEventRepository = pieceEventRepository;
         this.userRepository = userRepository;
@@ -65,6 +69,8 @@ public class PieceApplicationService {
         this.pieceEventMapper = pieceEventMapper;
         this.idempotencyService = idempotencyService;
         this.photoService = photoService;
+        this.auditTrail = auditTrail;
+        this.metrics = metrics;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -106,7 +112,8 @@ public class PieceApplicationService {
     }
 
     @Transactional
-    public IdempotentResponse receive(UUID actorId, String idempotencyKey, ReceivePieceRequest request) {
+    public IdempotentResponse receive(UUID actorId, String idempotencyKey, ReceivePieceRequest request,
+            String ipAddress) {
         return idempotencyService.execute(actorId, "pieces.receive", idempotencyKey, request, () -> {
             if (request.stage() != PieceStage.FABRICA && request.stage() != PieceStage.BANHO_OURO) {
                 throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_INITIAL_STAGE",
@@ -137,13 +144,16 @@ public class PieceApplicationService {
             List<PieceEventResponse> eventResponses = pieceEventRepository.saveAll(events).stream()
                     .map(pieceEventMapper::toResponse)
                     .toList();
+            auditTrail.record(actorId, "PIECE_RECEIVED", "PIECE", piece.getId(), ipAddress, pieceState(piece));
+            metrics.pieceReceived();
             ReceivePieceResponse response = new ReceivePieceResponse(pieceMapper.toResponse(piece), eventResponses);
             return new IdempotentResponse(201, objectMapper.valueToTree(response));
         });
     }
 
     @Transactional
-    public IdempotentResponse label(UUID actorId, String idempotencyKey, LabelPieceRequest request) {
+    public IdempotentResponse label(UUID actorId, String idempotencyKey, LabelPieceRequest request,
+            String ipAddress) {
         return idempotencyService.execute(actorId, "pieces.label", idempotencyKey, request, () -> {
             if (!request.backFromBath()) {
                 throw new ApiException(HttpStatus.CONFLICT, "INVALID_PIECE_TRANSITION",
@@ -175,8 +185,20 @@ public class PieceApplicationService {
 
             PieceEventEntity event = createEvent(piece, PieceStage.ETIQUETADA, occurredAt, "Etiquetada", actorId);
             pieceEventRepository.save(event);
+            auditTrail.record(actorId, "PIECE_LABELED", "PIECE", piece.getId(), ipAddress, pieceState(piece));
+            metrics.pieceLabeled();
             return new IdempotentResponse(200, objectMapper.valueToTree(pieceMapper.toResponse(piece)));
         });
+    }
+
+    private static java.util.Map<String, Object> pieceState(PieceEntity piece) {
+        java.util.Map<String, Object> state = new java.util.LinkedHashMap<>();
+        state.put("code", piece.getCode());
+        state.put("type", piece.getType());
+        state.put("valueCents", piece.getValueCents());
+        state.put("status", piece.getStatus().name());
+        state.put("photoId", piece.getPhotoId() == null ? null : piece.getPhotoId().toString());
+        return state;
     }
 
     private PieceEntity findPiece(UUID pieceId) {

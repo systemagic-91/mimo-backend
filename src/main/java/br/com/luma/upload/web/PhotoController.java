@@ -25,6 +25,7 @@ import br.com.luma.upload.service.PhotoContent;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 
 @RestController
 @RequestMapping("/api/v1")
@@ -45,8 +46,9 @@ public class PhotoController {
     @Operation(summary = "Envia a foto de uma peça (JPEG, PNG ou WebP, até 1 MB e 2000x2000 px)")
     public ResponseEntity<JsonNode> upload(@RequestPart("file") MultipartFile file,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
-            @AuthenticationPrincipal Jwt jwt) {
-        IdempotentResponse response = photoService.upload(UUID.fromString(jwt.getSubject()), idempotencyKey, file);
+            @AuthenticationPrincipal Jwt jwt, HttpServletRequest httpRequest) {
+        IdempotentResponse response = photoService.upload(UUID.fromString(jwt.getSubject()), idempotencyKey, file,
+                httpRequest.getRemoteAddr());
         return ResponseEntity.status(response.status()).body(response.body());
     }
 

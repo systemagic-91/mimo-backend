@@ -1,3 +1,6 @@
+server:
+  port: ${PORT:8080}
+
 spring:
   application:
     name: mimo-backend
@@ -36,6 +39,10 @@ app:
       window: ${LOGIN_RATE_LIMIT_WINDOW:PT15M}
   idempotency:
     ttl: ${IDEMPOTENCY_TTL:P1D}
+    retention-after-expiry: ${IDEMPOTENCY_RETENTION:P7D}
+    cleanup:
+      cron: ${IDEMPOTENCY_CLEANUP_CRON:0 30 3 * * *}
+      zone: ${IDEMPOTENCY_CLEANUP_ZONE:America/Sao_Paulo}
   uploads:
     rate-limit:
       max-uploads: ${UPLOAD_MAX_PER_WINDOW:30}
@@ -48,10 +55,19 @@ management:
   endpoints:
     web:
       exposure:
-        include: health
+        include: health,metrics,prometheus
   endpoint:
     health:
       show-details: never
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING_PROBABILITY:1.0}
 
 springdoc:
   api-docs:
@@ -61,4 +77,5 @@ springdoc:
 
 logging:
   pattern:
-    level: "%5p [requestId:%X{requestId:-}]"
+    correlation: ""
+    level: "%5p [requestId:%X{requestId:-} traceId:%X{traceId:-} spanId:%X{spanId:-}]"

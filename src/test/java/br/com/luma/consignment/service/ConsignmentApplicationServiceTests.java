@@ -39,6 +39,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import br.com.luma.auth.entity.UserEntity;
 import br.com.luma.auth.repository.UserRepository;
 import br.com.luma.consignment.dto.ConsignmentListItemResponse;
@@ -69,6 +71,7 @@ import br.com.luma.shared.entity.AuditLogEntity;
 import br.com.luma.shared.exception.ApiException;
 import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
+import br.com.luma.shared.metrics.BusinessMetrics;
 import br.com.luma.shared.repository.AuditLogRepository;
 
 @ExtendWith(MockitoExtension.class)
@@ -100,6 +103,7 @@ class ConsignmentApplicationServiceTests {
     @Mock
     private JdbcTemplate jdbcTemplate;
 
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
     private ConsignmentApplicationService service;
     private UserEntity actor;
 
@@ -107,7 +111,8 @@ class ConsignmentApplicationServiceTests {
     void setUp() {
         service = new ConsignmentApplicationService(consignmentRepository, itemRepository, sellerRepository,
                 pieceRepository, pieceEventRepository, settingsRepository, userRepository, auditLogRepository,
-                new ConsignmentItemMapperImpl(), new SellerMapperImpl(), idempotencyService, jdbcTemplate,
+                new ConsignmentItemMapperImpl(), new SellerMapperImpl(), idempotencyService,
+                new BusinessMetrics(meterRegistry), jdbcTemplate,
                 new ObjectMapper().registerModule(new JavaTimeModule()), Clock.fixed(NOW, ZoneOffset.UTC));
         actor = new UserEntity();
         actor.setId(ACTOR_ID);
@@ -165,6 +170,9 @@ class ConsignmentApplicationServiceTests {
         assertThat(savedEvents()).extracting(PieceEventEntity::getStage)
                 .containsExactly(PieceStage.CONSIGNACAO, PieceStage.CONSIGNACAO);
         assertThat(savedAudit().getAction()).isEqualTo("CONSIGNMENT_CREATED");
+        assertThat(meterRegistry.get("luma.consignments.created").counter().count()).isEqualTo(1);
+        assertThat(meterRegistry.get("luma.consignment.items").tag("action", "delivered").counter().count())
+                .isEqualTo(2);
     }
 
     @Test
@@ -232,6 +240,7 @@ class ConsignmentApplicationServiceTests {
                 });
         assertThat(available.getStatus()).isEqualTo(PieceStage.ETIQUETADA);
         assertNothingWritten();
+        assertThat(meterRegistry.find("luma.consignments.created").counter()).isNull();
     }
 
     @Test
@@ -280,6 +289,8 @@ class ConsignmentApplicationServiceTests {
         verify(pieceEventRepository).save(event.capture());
         assertThat(event.getValue().getStage()).isEqualTo(PieceStage.VENDIDA);
         assertThat(savedAudit().getAction()).isEqualTo("CONSIGNMENT_ITEM_SOLD");
+        assertThat(meterRegistry.get("luma.consignment.items").tag("action", "sold").counter().count())
+                .isEqualTo(1);
     }
 
     @Test

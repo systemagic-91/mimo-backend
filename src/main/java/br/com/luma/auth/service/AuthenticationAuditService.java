@@ -11,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 import br.com.luma.auth.entity.UserEntity;
 import br.com.luma.auth.repository.UserRepository;
 import br.com.luma.shared.entity.AuditLogEntity;
+import br.com.luma.shared.metrics.BusinessMetrics;
 import br.com.luma.shared.repository.AuditLogRepository;
 
 @Service
@@ -18,11 +19,14 @@ public class AuthenticationAuditService {
 
     private final AuditLogRepository auditLogRepository;
     private final UserRepository userRepository;
+    private final BusinessMetrics metrics;
     private final Clock clock;
 
-    public AuthenticationAuditService(AuditLogRepository auditLogRepository, UserRepository userRepository, Clock clock) {
+    public AuthenticationAuditService(AuditLogRepository auditLogRepository, UserRepository userRepository,
+            BusinessMetrics metrics, Clock clock) {
         this.auditLogRepository = auditLogRepository;
         this.userRepository = userRepository;
+        this.metrics = metrics;
         this.clock = clock;
     }
 
@@ -38,5 +42,8 @@ public class AuthenticationAuditService {
         audit.setIpAddress(ipAddress);
         audit.setOccurredAt(clock.instant());
         auditLogRepository.save(audit);
+        if ("LOGIN_SUCCEEDED".equals(action) || "LOGIN_FAILED".equals(action)) {
+            metrics.login("LOGIN_SUCCEEDED".equals(action));
+        }
     }
 }

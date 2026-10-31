@@ -30,6 +30,7 @@ import br.com.luma.shared.dto.PaginationRequest;
 import br.com.luma.shared.dto.PieceEventResponse;
 import br.com.luma.shared.dto.PieceResponse;
 import br.com.luma.shared.idempotency.IdempotentResponse;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 import io.swagger.v3.oas.annotations.Operation;
@@ -81,16 +82,18 @@ public class PieceController {
     @Operation(summary = "Recebe uma peça da fábrica ou a encaminha ao banho")
     public ResponseEntity<JsonNode> receive(@Valid @RequestBody ReceivePieceRequest request,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
-            @AuthenticationPrincipal Jwt jwt) {
-        return response(pieceService.receive(UUID.fromString(jwt.getSubject()), idempotencyKey, request));
+            @AuthenticationPrincipal Jwt jwt, HttpServletRequest httpRequest) {
+        return response(pieceService.receive(UUID.fromString(jwt.getSubject()), idempotencyKey, request,
+                httpRequest.getRemoteAddr()));
     }
 
     @PostMapping("/label")
     @Operation(summary = "Etiqueta uma peça existente que retornou do banho")
     public ResponseEntity<JsonNode> label(@Valid @RequestBody LabelPieceRequest request,
             @RequestHeader("Idempotency-Key") String idempotencyKey,
-            @AuthenticationPrincipal Jwt jwt) {
-        return response(pieceService.label(UUID.fromString(jwt.getSubject()), idempotencyKey, request));
+            @AuthenticationPrincipal Jwt jwt, HttpServletRequest httpRequest) {
+        return response(pieceService.label(UUID.fromString(jwt.getSubject()), idempotencyKey, request,
+                httpRequest.getRemoteAddr()));
     }
 
     private static ResponseEntity<JsonNode> response(IdempotentResponse response) {

@@ -11,3 +11,8 @@ app:
   security:
     jwt:
       secret: ${JWT_SECRET}
+
+logging:
+  structured:
+    format:
+      console: logstash

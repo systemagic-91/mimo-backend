@@ -43,6 +43,8 @@ public class SecurityConfiguration {
                         .permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/photos/*")
                         .permitAll()
+                        .requestMatchers("/actuator/metrics", "/actuator/metrics/**", "/actuator/prometheus")
+                        .hasRole("OWNER")
                         .requestMatchers(HttpMethod.GET, "/api/v1/settings")
                         .hasAnyRole("OWNER", "STAFF")
                         .requestMatchers("/api/v1/dashboard/**", "/api/v1/reports/**", "/api/v1/settings/**")

@@ -17,9 +17,11 @@ import org.springframework.web.multipart.MultipartFile;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import br.com.luma.auth.repository.UserRepository;
+import br.com.luma.shared.audit.AuditTrail;
 import br.com.luma.shared.exception.ApiException;
 import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
+import br.com.luma.shared.metrics.BusinessMetrics;
 import br.com.luma.upload.PhotoUrls;
 import br.com.luma.upload.dto.PhotoUploadResponse;
 import br.com.luma.upload.entity.PiecePhotoEntity;
@@ -36,23 +38,27 @@ public class PhotoApplicationService {
     private final PhotoInspector inspector;
     private final PhotoUploadRateLimiter rateLimiter;
     private final IdempotencyService idempotencyService;
+    private final AuditTrail auditTrail;
+    private final BusinessMetrics metrics;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
     public PhotoApplicationService(PiecePhotoRepository photoRepository, UserRepository userRepository,
             PhotoInspector inspector, PhotoUploadRateLimiter rateLimiter, IdempotencyService idempotencyService,
-            ObjectMapper objectMapper, Clock clock) {
+            AuditTrail auditTrail, BusinessMetrics metrics, ObjectMapper objectMapper, Clock clock) {
         this.photoRepository = photoRepository;
         this.userRepository = userRepository;
         this.inspector = inspector;
         this.rateLimiter = rateLimiter;
         this.idempotencyService = idempotencyService;
+        this.auditTrail = auditTrail;
+        this.metrics = metrics;
         this.objectMapper = objectMapper;
         this.clock = clock;
     }
 
     @Transactional
-    public IdempotentResponse upload(UUID actorId, String idempotencyKey, MultipartFile file) {
+    public IdempotentResponse upload(UUID actorId, String idempotencyKey, MultipartFile file, String ipAddress) {
         byte[] content = readContent(file);
         rateLimiter.acquire(actorId);
         return idempotencyService.execute(actorId, "uploads.piece-photo", idempotencyKey,
@@ -67,6 +73,10 @@ public class PhotoApplicationService {
                     photo.setCreatedBy(userRepository.getReferenceById(actorId));
                     photo.setCreatedAt(clock.instant());
                     photo = photoRepository.save(photo);
+                    auditTrail.record(actorId, "PHOTO_UPLOADED", "PHOTO", photo.getId(), ipAddress, Map.of(
+                            "contentType", metadata.contentType(), "width", metadata.width(),
+                            "height", metadata.height(), "sizeBytes", content.length));
+                    metrics.photoUploaded(content.length);
 
                     PhotoUploadResponse response = new PhotoUploadResponse(photo.getId(),
                             PhotoUrls.of(photo.getId()), metadata.width(), metadata.height());

@@ -24,7 +24,7 @@ public class WebConfiguration {
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(Arrays.asList(
             "Authorization", "Content-Type", "Idempotency-Key", "X-Request-Id"));
-        configuration.setExposedHeaders(List.of("Location", "X-Request-Id"));
+        configuration.setExposedHeaders(List.of("Location", "X-Request-Id", "X-Trace-Id"));
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/api/**", configuration);

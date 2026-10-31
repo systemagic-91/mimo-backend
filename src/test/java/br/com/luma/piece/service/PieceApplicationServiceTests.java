@@ -32,6 +32,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import br.com.luma.auth.repository.UserRepository;
 import br.com.luma.piece.dto.LabelPieceRequest;
 import br.com.luma.piece.dto.ReceivePieceRequest;
@@ -42,10 +44,12 @@ import br.com.luma.piece.mapper.PieceMapper;
 import br.com.luma.piece.repository.PieceEventRepository;
 import br.com.luma.piece.repository.PieceRepository;
 import br.com.luma.shared.PieceStage;
+import br.com.luma.shared.audit.AuditTrail;
 import br.com.luma.shared.dto.PaginationRequest;
 import br.com.luma.shared.exception.ApiException;
 import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
+import br.com.luma.shared.metrics.BusinessMetrics;
 import br.com.luma.upload.service.PhotoApplicationService;
 
 @ExtendWith(MockitoExtension.class)
@@ -53,6 +57,7 @@ class PieceApplicationServiceTests {
 
     private static final Instant NOW = Instant.parse("2026-10-30T12:00:00Z");
     private static final UUID ACTOR_ID = UUID.randomUUID();
+    private static final String IP = "203.0.113.10";
 
     @Mock
     private PieceRepository pieceRepository;
@@ -69,14 +74,19 @@ class PieceApplicationServiceTests {
     @Mock
     private PhotoApplicationService photoService;
     @Mock
+    private AuditTrail auditTrail;
+    @Mock
     private JdbcTemplate jdbcTemplate;
+
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     private PieceApplicationService service;
 
     @BeforeEach
     void setUp() {
         service = new PieceApplicationService(pieceRepository, pieceEventRepository, userRepository, pieceMapper,
-                pieceEventMapper, idempotencyService, photoService, jdbcTemplate, new ObjectMapper(),
+                pieceEventMapper, idempotencyService, photoService, auditTrail, new BusinessMetrics(meterRegistry),
+                jdbcTemplate, new ObjectMapper(),
                 Clock.fixed(NOW, ZoneOffset.UTC));
         lenient().when(idempotencyService.execute(any(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> invocation.<Supplier<IdempotentResponse>>getArgument(4).get());
@@ -89,7 +99,7 @@ class PieceApplicationServiceTests {
         allocateSequence(7L);
 
         IdempotentResponse response = service.receive(ACTOR_ID, "key",
-                new ReceivePieceRequest(" Brinco ", 12_900, PieceStage.FABRICA, "  "));
+                new ReceivePieceRequest(" Brinco ", 12_900, PieceStage.FABRICA, "  "), IP);
 
         assertThat(response.status()).isEqualTo(201);
         PieceEntity piece = savedPiece();
@@ -99,13 +109,16 @@ class PieceApplicationServiceTests {
         assertThat(piece.getCurrentLocation()).isEqualTo("Fábrica");
         assertThat(piece.getNote()).isNull();
         assertThat(savedEvents()).extracting(PieceEventEntity::getStage).containsExactly(PieceStage.FABRICA);
+        verify(auditTrail).record(eq(ACTOR_ID), eq("PIECE_RECEIVED"), eq("PIECE"), any(), eq(IP), any());
+        assertThat(meterRegistry.get("luma.pieces.movements").tag("action", "received").counter().count())
+                .isEqualTo(1);
     }
 
     @Test
     void receivingAtTheBathRecordsFactoryThenBathInOrder() {
         allocateSequence(12L);
 
-        service.receive(ACTOR_ID, "key", new ReceivePieceRequest("Colar", 5_000, PieceStage.BANHO_OURO, null));
+        service.receive(ACTOR_ID, "key", new ReceivePieceRequest("Colar", 5_000, PieceStage.BANHO_OURO, null), IP);
 
         assertThat(savedPiece().getCurrentLocation()).isEqualTo("No banho de ouro");
         List<PieceEventEntity> events = savedEvents();
@@ -117,7 +130,7 @@ class PieceApplicationServiceTests {
     @Test
     void receivingRejectsStagesOtherThanFactoryOrBath() {
         assertApiError(() -> service.receive(ACTOR_ID, "key",
-                new ReceivePieceRequest("Anel", 1_000, PieceStage.ETIQUETADA, null)),
+                new ReceivePieceRequest("Anel", 1_000, PieceStage.ETIQUETADA, null), IP),
                 HttpStatus.UNPROCESSABLE_ENTITY, "INVALID_INITIAL_STAGE");
         verify(pieceRepository, never()).save(any());
     }
@@ -130,7 +143,7 @@ class PieceApplicationServiceTests {
                 .thenReturn(Optional.empty());
 
         IdempotentResponse response = service.label(ACTOR_ID, "key", new LabelPieceRequest(piece.getId(),
-                "Pulseira", 25_000, photoId, " Retorno ok ", true));
+                "Pulseira", 25_000, photoId, " Retorno ok ", true), IP);
 
         assertThat(response.status()).isEqualTo(200);
         verify(pieceRepository).save(piece);
@@ -145,6 +158,9 @@ class PieceApplicationServiceTests {
         verify(pieceEventRepository).save(event.capture());
         assertThat(event.getValue().getStage()).isEqualTo(PieceStage.ETIQUETADA);
         assertThat(event.getValue().getOccurredAt()).isEqualTo(NOW);
+        verify(auditTrail).record(eq(ACTOR_ID), eq("PIECE_LABELED"), eq("PIECE"), eq(piece.getId()), eq(IP), any());
+        assertThat(meterRegistry.get("luma.pieces.movements").tag("action", "labeled").counter().count())
+                .isEqualTo(1);
     }
 
     @Test
@@ -155,7 +171,7 @@ class PieceApplicationServiceTests {
         when(pieceEventRepository.findFirstByPiece_IdOrderByOccurredAtDescIdDesc(piece.getId()))
                 .thenReturn(Optional.of(latest));
 
-        service.label(ACTOR_ID, "key", new LabelPieceRequest(piece.getId(), "Anel", 1_000, null, null, true));
+        service.label(ACTOR_ID, "key", new LabelPieceRequest(piece.getId(), "Anel", 1_000, null, null, true), IP);
 
         ArgumentCaptor<PieceEventEntity> event = ArgumentCaptor.forClass(PieceEventEntity.class);
         verify(pieceEventRepository).save(event.capture());
@@ -167,10 +183,10 @@ class PieceApplicationServiceTests {
         PieceEntity labeled = piece(PieceStage.ETIQUETADA);
 
         assertApiError(() -> service.label(ACTOR_ID, "key",
-                new LabelPieceRequest(labeled.getId(), "Anel", 1_000, null, null, false)),
+                new LabelPieceRequest(labeled.getId(), "Anel", 1_000, null, null, false), IP),
                 HttpStatus.CONFLICT, "INVALID_PIECE_TRANSITION");
         assertApiError(() -> service.label(ACTOR_ID, "key",
-                new LabelPieceRequest(labeled.getId(), "Anel", 1_000, null, null, true)),
+                new LabelPieceRequest(labeled.getId(), "Anel", 1_000, null, null, true), IP),
                 HttpStatus.CONFLICT, "INVALID_PIECE_TRANSITION");
         verify(pieceRepository, never()).save(any());
     }
@@ -183,7 +199,7 @@ class PieceApplicationServiceTests {
                 .when(photoService).requireExisting(missingPhoto);
 
         assertApiError(() -> service.label(ACTOR_ID, "key",
-                new LabelPieceRequest(piece.getId(), "Anel", 1_000, missingPhoto, null, true)),
+                new LabelPieceRequest(piece.getId(), "Anel", 1_000, missingPhoto, null, true), IP),
                 HttpStatus.NOT_FOUND, "PHOTO_NOT_FOUND");
         assertThat(piece.getStatus()).isEqualTo(PieceStage.BANHO_OURO);
         assertThat(piece.getPhotoId()).isNull();
@@ -196,7 +212,7 @@ class PieceApplicationServiceTests {
         when(pieceEventRepository.findFirstByPiece_IdOrderByOccurredAtDescIdDesc(piece.getId()))
                 .thenReturn(Optional.empty());
 
-        service.label(ACTOR_ID, "key", new LabelPieceRequest(piece.getId(), "Anel", 1_000, null, null, true));
+        service.label(ACTOR_ID, "key", new LabelPieceRequest(piece.getId(), "Anel", 1_000, null, null, true), IP);
 
         assertThat(piece.getPhotoId()).isNull();
         verify(photoService, never()).requireExisting(any());
@@ -208,7 +224,7 @@ class PieceApplicationServiceTests {
         when(pieceRepository.findByIdForUpdate(missing)).thenReturn(Optional.empty());
 
         assertApiError(() -> service.label(ACTOR_ID, "key",
-                new LabelPieceRequest(missing, "Anel", 1_000, null, null, true)),
+                new LabelPieceRequest(missing, "Anel", 1_000, null, null, true), IP),
                 HttpStatus.NOT_FOUND, "PIECE_NOT_FOUND");
     }
 

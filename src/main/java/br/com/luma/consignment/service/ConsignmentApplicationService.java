@@ -61,6 +61,7 @@ import br.com.luma.shared.entity.AuditLogEntity;
 import br.com.luma.shared.exception.ApiException;
 import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
+import br.com.luma.shared.metrics.BusinessMetrics;
 import br.com.luma.shared.repository.AuditLogRepository;
 
 @Service
@@ -86,6 +87,7 @@ public class ConsignmentApplicationService {
     private final ConsignmentItemMapper itemMapper;
     private final SellerMapper sellerMapper;
     private final IdempotencyService idempotencyService;
+    private final BusinessMetrics metrics;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -95,8 +97,8 @@ public class ConsignmentApplicationService {
             PieceRepository pieceRepository, PieceEventRepository pieceEventRepository,
             SettingsRepository settingsRepository, UserRepository userRepository,
             AuditLogRepository auditLogRepository, ConsignmentItemMapper itemMapper, SellerMapper sellerMapper,
-            IdempotencyService idempotencyService, JdbcTemplate jdbcTemplate, ObjectMapper objectMapper,
-            Clock clock) {
+            IdempotencyService idempotencyService, BusinessMetrics metrics, JdbcTemplate jdbcTemplate,
+            ObjectMapper objectMapper, Clock clock) {
         this.consignmentRepository = consignmentRepository;
         this.itemRepository = itemRepository;
         this.sellerRepository = sellerRepository;
@@ -108,6 +110,7 @@ public class ConsignmentApplicationService {
         this.itemMapper = itemMapper;
         this.sellerMapper = sellerMapper;
         this.idempotencyService = idempotencyService;
+        this.metrics = metrics;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -228,6 +231,7 @@ public class ConsignmentApplicationService {
             state.put("pieceIds", pieces.stream().map(piece -> piece.getId().toString()).toList());
             state.put("dueAt", consignment.getDueAt().toString());
             audit(actorId, consignment.getId(), "CONSIGNMENT_CREATED", ipAddress, state);
+            metrics.consignmentCreated(items.size());
 
             consignmentRepository.flush();
             return new IdempotentResponse(201, objectMapper.valueToTree(details(consignment, items, now)));
@@ -252,6 +256,7 @@ public class ConsignmentApplicationService {
                             nextEventTime(pieceId, soldAt),
                             note != null ? note : "Vendida por " + action.consignment().getSeller().getName(),
                             actorId));
+                    metrics.consignmentItemSold();
                     return finishItemAction(actorId, action, "CONSIGNMENT_ITEM_SOLD", ipAddress);
                 });
     }
@@ -278,6 +283,7 @@ public class ConsignmentApplicationService {
                                     actorId),
                             createEvent(action.piece(), PieceStage.ETIQUETADA, returnedEventAt.plusMillis(1),
                                     "De volta ao estoque", actorId)));
+                    metrics.consignmentItemReturned();
                     return finishItemAction(actorId, action, "CONSIGNMENT_ITEM_RETURNED", ipAddress);
                 });
     }

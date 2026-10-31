@@ -35,6 +35,7 @@ import br.com.luma.upload.service.PhotoContent;
 
 @SpringBootTest
 @AutoConfigureMockMvc
+@org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability
 @ActiveProfiles("test")
 class LumaApplicationTests {
 
@@ -55,6 +56,27 @@ class LumaApplicationTests {
 
     @MockitoBean
     private ReportApplicationService reportService;
+
+    @Test
+    void metricsAreOnlyForOwners() throws Exception {
+        for (String path : java.util.List.of("/actuator/metrics", "/actuator/prometheus")) {
+            mockMvc.perform(get(path)).andExpect(status().isUnauthorized());
+            mockMvc.perform(get(path).with(role("STAFF"))).andExpect(status().isForbidden());
+        }
+        mockMvc.perform(get("/actuator/metrics").with(role("OWNER")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.names").isArray());
+        mockMvc.perform(get("/actuator/prometheus").with(role("OWNER")))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("jvm_memory_used_bytes")));
+    }
+
+    @Test
+    void everyResponseCarriesATraceId() throws Exception {
+        mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("X-Trace-Id", org.hamcrest.Matchers.matchesPattern("[0-9a-f]{32}")));
+    }
 
     @Test
     void staffCannotOpenDashboardOrReports() throws Exception {

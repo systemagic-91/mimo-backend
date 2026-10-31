@@ -37,10 +37,14 @@ import org.springframework.mock.web.MockMultipartFile;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import br.com.luma.auth.repository.UserRepository;
+import br.com.luma.shared.audit.AuditTrail;
 import br.com.luma.shared.exception.ApiException;
 import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
+import br.com.luma.shared.metrics.BusinessMetrics;
 import br.com.luma.upload.entity.PiecePhotoEntity;
 import br.com.luma.upload.repository.PiecePhotoRepository;
 
@@ -49,6 +53,7 @@ class PhotoApplicationServiceTests {
 
     private static final Instant NOW = Instant.parse("2026-10-30T12:00:00Z");
     private static final UUID ACTOR_ID = UUID.randomUUID();
+    private static final String IP = "203.0.113.10";
 
     @Mock
     private PiecePhotoRepository photoRepository;
@@ -58,13 +63,17 @@ class PhotoApplicationServiceTests {
     private PhotoUploadRateLimiter rateLimiter;
     @Mock
     private IdempotencyService idempotencyService;
+    @Mock
+    private AuditTrail auditTrail;
+
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     private PhotoApplicationService service;
 
     @BeforeEach
     void setUp() {
         service = new PhotoApplicationService(photoRepository, userRepository, new PhotoInspector(), rateLimiter,
-                idempotencyService, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC));
+                idempotencyService, auditTrail, new BusinessMetrics(meterRegistry), new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC));
         lenient().when(idempotencyService.execute(any(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> invocation.<Supplier<IdempotentResponse>>getArgument(4).get());
         lenient().when(photoRepository.save(any())).thenAnswer(invocation -> {
@@ -79,7 +88,7 @@ class PhotoApplicationServiceTests {
         byte[] png = png(320, 240);
         MockMultipartFile file = new MockMultipartFile("file", "evil.svg", "image/svg+xml", png);
 
-        IdempotentResponse response = service.upload(ACTOR_ID, "key", file);
+        IdempotentResponse response = service.upload(ACTOR_ID, "key", file, IP);
 
         PiecePhotoEntity photo = savedPhoto();
         assertThat(photo.getContent()).isEqualTo(png);
@@ -94,13 +103,19 @@ class PhotoApplicationServiceTests {
         assertThat(response.body().get("width").asInt()).isEqualTo(320);
         assertThat(response.body().get("height").asInt()).isEqualTo(240);
         verify(rateLimiter).acquire(ACTOR_ID);
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Map<String, Object>> audit = ArgumentCaptor.forClass(Map.class);
+        verify(auditTrail).record(eq(ACTOR_ID), eq("PHOTO_UPLOADED"), eq("PHOTO"), eq(photo.getId()), eq(IP),
+                audit.capture());
+        assertThat(audit.getValue()).containsOnlyKeys("contentType", "width", "height", "sizeBytes");
+        assertThat(meterRegistry.get("luma.photos.uploaded").counter().count()).isEqualTo(1);
     }
 
     @Test
     void idempotencyFingerprintIsTheContentHashNotTheBytes() throws IOException {
         MockMultipartFile file = new MockMultipartFile("file", "a.png", "image/png", png(10, 10));
 
-        service.upload(ACTOR_ID, "key", file);
+        service.upload(ACTOR_ID, "key", file, IP);
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, String>> payload = ArgumentCaptor.forClass(Map.class);
@@ -115,7 +130,7 @@ class PhotoApplicationServiceTests {
         MockMultipartFile file = new MockMultipartFile("file", "photo.png", "image/png",
                 "<svg></svg>".getBytes(StandardCharsets.UTF_8));
 
-        assertApiError(() -> service.upload(ACTOR_ID, "key", file), HttpStatus.BAD_REQUEST, "VALIDATION_ERROR");
+        assertApiError(() -> service.upload(ACTOR_ID, "key", file, IP), HttpStatus.BAD_REQUEST, "VALIDATION_ERROR");
         verify(photoRepository, never()).save(any());
     }
 
@@ -123,8 +138,8 @@ class PhotoApplicationServiceTests {
     void emptyFileIsRejectedBeforeRateLimitAndIdempotency() {
         MockMultipartFile file = new MockMultipartFile("file", "photo.png", "image/png", new byte[0]);
 
-        assertApiError(() -> service.upload(ACTOR_ID, "key", file), HttpStatus.BAD_REQUEST, "VALIDATION_ERROR");
-        verifyNoInteractions(rateLimiter, idempotencyService, photoRepository);
+        assertApiError(() -> service.upload(ACTOR_ID, "key", file, IP), HttpStatus.BAD_REQUEST, "VALIDATION_ERROR");
+        verifyNoInteractions(rateLimiter, idempotencyService, photoRepository, auditTrail);
     }
 
     @Test
@@ -132,7 +147,7 @@ class PhotoApplicationServiceTests {
         MockMultipartFile file = new MockMultipartFile("file", "photo.jpg", "image/jpeg",
                 new byte[PhotoApplicationService.MAX_SIZE_BYTES + 1]);
 
-        assertApiError(() -> service.upload(ACTOR_ID, "key", file), HttpStatus.PAYLOAD_TOO_LARGE,
+        assertApiError(() -> service.upload(ACTOR_ID, "key", file, IP), HttpStatus.PAYLOAD_TOO_LARGE,
                 "PHOTO_TOO_LARGE");
         verifyNoInteractions(rateLimiter, idempotencyService, photoRepository);
     }
@@ -143,7 +158,7 @@ class PhotoApplicationServiceTests {
                 .when(rateLimiter).acquire(ACTOR_ID);
         MockMultipartFile file = new MockMultipartFile("file", "a.png", "image/png", png(10, 10));
 
-        assertApiError(() -> service.upload(ACTOR_ID, "key", file), HttpStatus.TOO_MANY_REQUESTS, "RATE_LIMITED");
+        assertApiError(() -> service.upload(ACTOR_ID, "key", file, IP), HttpStatus.TOO_MANY_REQUESTS, "RATE_LIMITED");
         verifyNoInteractions(idempotencyService, photoRepository);
     }
 
