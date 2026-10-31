@@ -36,15 +36,23 @@ public class IdempotencyService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final Duration ttl;
+    private final Duration retentionAfterExpiry;
 
     public IdempotencyService(IdempotencyKeyRepository idempotencyKeyRepository, UserRepository userRepository,
             ObjectMapper objectMapper, Clock clock,
-            @Value("${app.idempotency.ttl:P1D}") Duration ttl) {
+            @Value("${app.idempotency.ttl:P1D}") Duration ttl,
+            @Value("${app.idempotency.retention-after-expiry:P7D}") Duration retentionAfterExpiry) {
         this.idempotencyKeyRepository = idempotencyKeyRepository;
         this.userRepository = userRepository;
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.ttl = ttl;
+        this.retentionAfterExpiry = retentionAfterExpiry;
+    }
+
+    @Transactional
+    public int deleteExpired() {
+        return idempotencyKeyRepository.deleteExpiredBefore(clock.instant().minus(retentionAfterExpiry));
     }
 
     @Transactional

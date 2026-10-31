@@ -31,6 +31,10 @@ public interface IdempotencyKeyRepository extends JpaRepository<IdempotencyKeyEn
             @Param("fingerprint") String fingerprint, @Param("createdAt") java.time.Instant createdAt,
             @Param("expiresAt") java.time.Instant expiresAt);
 
+    @Modifying
+    @Query(value = "DELETE FROM idempotency_keys WHERE expires_at < :cutoff", nativeQuery = true)
+    int deleteExpiredBefore(@Param("cutoff") java.time.Instant cutoff);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select entry from IdempotencyKeyEntity entry "
             + "where entry.user.id = :userId and entry.idempotencyKey = :key")

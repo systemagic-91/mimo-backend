@@ -55,7 +55,14 @@ class IdempotencyServiceTests {
     @BeforeEach
     void setUp() {
         service = new IdempotencyService(repository, userRepository, objectMapper,
-                Clock.fixed(NOW, ZoneOffset.UTC), TTL);
+                Clock.fixed(NOW, ZoneOffset.UTC), TTL, Duration.ofDays(7));
+    }
+
+    @Test
+    void cleanupDeletesOnlyKeysExpiredMoreThanSevenDaysAgo() {
+        when(repository.deleteExpiredBefore(Instant.parse("2026-10-23T12:00:00Z"))).thenReturn(4);
+
+        assertThat(service.deleteExpired()).isEqualTo(4);
     }
 
     @Test
