@@ -51,6 +51,7 @@ import br.com.luma.seller.mapper.SellerMapper;
 import br.com.luma.seller.repository.SellerRepository;
 import br.com.luma.setting.repository.SettingsRepository;
 import br.com.luma.shared.ConsignmentItemStatus;
+import br.com.luma.shared.CalendarDays;
 import br.com.luma.shared.ConsignmentStatus;
 import br.com.luma.shared.PieceStage;
 import br.com.luma.shared.SellerStatus;
@@ -116,6 +117,7 @@ public class ConsignmentApplicationService {
     public PageEnvelope<ConsignmentListItemResponse> list(String rawStatus, UUID sellerId, Boolean overdue,
             PaginationRequest pagination) {
         ConsignmentStatus status = parseStatus(rawStatus);
+        ZoneId zone = storeZone();
         Instant now = clock.instant();
         Pageable pageable = pagination.toPageable(ALLOWED_SORT_FIELDS);
         if (pageable.getSort().isUnsorted()) {
@@ -134,7 +136,7 @@ public class ConsignmentApplicationService {
             InHandSummary summary = inHand.get(consignment.getId());
             return new ConsignmentListItemResponse(consignment.getId(), consignment.getCode(),
                     consignment.getSeller().getId(), consignment.getDeliveredAt(), consignment.getDueAt(),
-                    visualStatus(consignment, now), consignment.getNote(), consignment.getCreatedBy().getId(),
+                    CalendarDays.between(now, consignment.getDueAt(), zone), visualStatus(consignment, now), consignment.getNote(), consignment.getCreatedBy().getId(),
                     consignment.getVersion(), sellerMapper.toResponse(consignment.getSeller()),
                     summary == null ? 0 : summary.getPiecesInHand(),
                     summary == null ? 0 : summary.getValueInHandCents());

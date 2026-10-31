@@ -6,6 +6,6 @@ import java.util.UUID;
 import br.com.luma.shared.dto.SellerResponse;
 
 public record ConsignmentListItemResponse(UUID id, String code, UUID sellerId, Instant deliveredAt,
-        Instant dueAt, String status, String note, UUID createdById, long version, SellerResponse seller,
-        long piecesInHand, long valueInHandCents) {
+        Instant dueAt, long dueInDays, String status, String note, UUID createdById, long version,
+        SellerResponse seller, long piecesInHand, long valueInHandCents) {
 }
