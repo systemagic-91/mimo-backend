@@ -42,6 +42,9 @@ public class UserEntity extends TimestampedEntity {
     @Column(name = "auth_version", nullable = false)
     private long authVersion;
 
+    @Column(name = "must_change_password", nullable = false)
+    private boolean mustChangePassword;
+
     @OneToMany(mappedBy = "user", fetch = jakarta.persistence.FetchType.LAZY, cascade = CascadeType.PERSIST)
     private List<RefreshTokenEntity> refreshTokens = new ArrayList<>();
 }

@@ -110,6 +110,40 @@ class LumaApplicationTests {
                 .andExpect(status().isBadRequest());
     }
 
+    @Test
+    void staffCannotManageUsers() throws Exception {
+        mockMvc.perform(get("/api/v1/users")).andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/v1/users").with(role("STAFF")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+        mockMvc.perform(post("/api/v1/users/" + UUID.randomUUID() + "/reset-password").with(role("STAFF"))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"temporaryPassword\":\"Temporaria-Senha-1\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void pendingPasswordChangeOnlyAllowsTheChangeItself() throws Exception {
+        for (String path : java.util.List.of("/api/v1/dashboard", "/api/v1/sellers", "/api/v1/users",
+                "/actuator/metrics")) {
+            mockMvc.perform(get(path).with(mustChangePassword()))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.code").value("PASSWORD_CHANGE_REQUIRED"));
+        }
+        // As rotas liberadas passam do filtro: o 400 vem da validação do corpo, não do bloqueio.
+        mockMvc.perform(post("/api/v1/auth/change-password").with(mustChangePassword())
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/api/v1/auth/logout").with(mustChangePassword())
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    private static org.springframework.test.web.servlet.request.RequestPostProcessor mustChangePassword() {
+        return org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt()
+                .jwt(token -> token.subject(UUID.randomUUID().toString()).claim("mustChangePassword", true))
+                .authorities(new SimpleGrantedAuthority("ROLE_OWNER"));
+    }
+
     private static org.springframework.test.web.servlet.request.RequestPostProcessor role(String role) {
         return org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt()
                 .jwt(token -> token.subject(UUID.randomUUID().toString()))

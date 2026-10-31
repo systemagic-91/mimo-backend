@@ -153,6 +153,7 @@ public class AuthApplicationService {
         }
 
         user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
+        user.setMustChangePassword(false);
         user.setAuthVersion(user.getAuthVersion() + 1);
         userRepository.saveAndFlush(user);
         refreshTokenRepository.revokeAllActiveByUserId(userId, clock.instant());

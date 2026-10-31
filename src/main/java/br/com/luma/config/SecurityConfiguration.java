@@ -9,7 +9,10 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
+
+import br.com.luma.auth.web.PasswordChangeRequiredFilter;
 import br.com.luma.shared.web.ProblemDetailWriter;
 
 @Configuration
@@ -47,12 +50,15 @@ public class SecurityConfiguration {
                         .hasRole("OWNER")
                         .requestMatchers(HttpMethod.GET, "/api/v1/settings")
                         .hasAnyRole("OWNER", "STAFF")
-                        .requestMatchers("/api/v1/dashboard/**", "/api/v1/reports/**", "/api/v1/settings/**")
+                        .requestMatchers("/api/v1/dashboard/**", "/api/v1/reports/**", "/api/v1/settings/**",
+                                "/api/v1/users", "/api/v1/users/**")
                         .hasRole("OWNER")
                         .anyRequest()
                         .authenticated())
                 .oauth2ResourceServer(resourceServer -> resourceServer.jwt(jwt ->
                         jwt.jwtAuthenticationConverter(jwtAuthenticationConverter)))
+                .addFilterAfter(new PasswordChangeRequiredFilter(problemDetailWriter),
+                        BearerTokenAuthenticationFilter.class)
                 .build();
     }
 }

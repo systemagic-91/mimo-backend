@@ -196,12 +196,14 @@ class AuthApplicationServiceTests {
     @Test
     void changingPasswordBumpsAuthVersionAndRevokesSessions() {
         UserEntity user = user(true);
+        user.setMustChangePassword(true);
         when(userRepository.findById(user.getId())).thenReturn(Optional.of(user));
 
         service.changePassword(user.getId(), new ChangePasswordRequest(PASSWORD, "Brand-New-Password-2"), CLIENT_IP);
 
         assertThat(passwordEncoder.matches("Brand-New-Password-2", user.getPasswordHash())).isTrue();
         assertThat(user.getAuthVersion()).isEqualTo(1);
+        assertThat(user.isMustChangePassword()).isFalse();
         verify(userRepository).saveAndFlush(user);
         verify(refreshTokenRepository).revokeAllActiveByUserId(user.getId(), NOW);
         verify(auditService).recordLogin(user.getId(), "PASSWORD_CHANGED", "SUCCESS", CLIENT_IP);

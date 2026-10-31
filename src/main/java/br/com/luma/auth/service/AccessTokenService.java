@@ -18,6 +18,9 @@ import br.com.luma.auth.entity.UserEntity;
 @Service
 public class AccessTokenService {
 
+    // Toda mudança de users.must_change_password incrementa o authVersion, então o claim nunca fica desatualizado.
+    public static final String MUST_CHANGE_PASSWORD_CLAIM = "mustChangePassword";
+
     private final JwtEncoder jwtEncoder;
     private final Clock clock;
     private final String issuer;
@@ -42,6 +45,7 @@ public class AccessTokenService {
                 .claim("email", user.getEmail())
                 .claim("roles", List.of("ROLE_" + user.getRole().name()))
                 .claim("authVersion", user.getAuthVersion())
+                .claim(MUST_CHANGE_PASSWORD_CLAIM, user.isMustChangePassword())
                 .build();
         String token = jwtEncoder.encode(JwtEncoderParameters.from(
                 JwsHeader.with(MacAlgorithm.HS256).build(), claims)).getTokenValue();
