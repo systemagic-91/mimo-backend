@@ -50,6 +50,9 @@ public class ConsignmentEntity extends VersionedEntity {
     @Column(length = 500)
     private String note;
 
+    @Column(name = "payment_term_days")
+    private Integer paymentTermDays;
+
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "created_by", nullable = false)
     private UserEntity createdBy;

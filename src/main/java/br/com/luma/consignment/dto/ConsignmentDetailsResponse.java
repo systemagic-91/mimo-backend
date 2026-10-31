@@ -9,6 +9,7 @@ import br.com.luma.shared.dto.ConsignmentItemResponse;
 import br.com.luma.shared.dto.SellerResponse;
 
 public record ConsignmentDetailsResponse(UUID id, String code, UUID sellerId, Instant deliveredAt,
-        Instant dueAt, ConsignmentStatus status, boolean late, String note, UUID createdById, long version,
+        Instant dueAt, ConsignmentStatus status, boolean late, Integer paymentTermDays, String note,
+        UUID createdById, long version,
         SellerResponse seller, List<ConsignmentItemResponse> items) {
 }

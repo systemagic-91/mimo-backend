@@ -72,6 +72,7 @@ import br.com.luma.shared.exception.ApiException;
 import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
 import br.com.luma.shared.metrics.BusinessMetrics;
+import br.com.luma.shared.security.CurrentUserRoles;
 import br.com.luma.shared.repository.AuditLogRepository;
 
 @ExtendWith(MockitoExtension.class)
@@ -102,6 +103,8 @@ class ConsignmentApplicationServiceTests {
     private IdempotencyService idempotencyService;
     @Mock
     private JdbcTemplate jdbcTemplate;
+    @Mock
+    private CurrentUserRoles currentUserRoles;
 
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
     private ConsignmentApplicationService service;
@@ -112,8 +115,9 @@ class ConsignmentApplicationServiceTests {
         service = new ConsignmentApplicationService(consignmentRepository, itemRepository, sellerRepository,
                 pieceRepository, pieceEventRepository, settingsRepository, userRepository, auditLogRepository,
                 new ConsignmentItemMapperImpl(), new SellerMapperImpl(), idempotencyService,
-                new BusinessMetrics(meterRegistry), jdbcTemplate,
-                new ObjectMapper().registerModule(new JavaTimeModule()), Clock.fixed(NOW, ZoneOffset.UTC));
+                new BusinessMetrics(meterRegistry), currentUserRoles, jdbcTemplate,
+                new ObjectMapper().registerModule(new JavaTimeModule())
+                        .disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS), Clock.fixed(NOW, ZoneOffset.UTC));
         actor = new UserEntity();
         actor.setId(ACTOR_ID);
         lenient().when(userRepository.getReferenceById(ACTOR_ID)).thenReturn(actor);
@@ -146,7 +150,7 @@ class ConsignmentApplicationServiceTests {
 
         IdempotentResponse response = service.create(ACTOR_ID, "key",
                 new CreateConsignmentRequest(seller.getId(), List.of(first.getId(), second.getId()),
-                        TODAY.plusDays(30), " Lote de outubro "), IP);
+                        TODAY.plusDays(30), 30, " Lote de outubro "), IP);
 
         assertThat(response.status()).isEqualTo(201);
         assertThat(response.body().get("code").asText()).isEqualTo("C-2026-007");
@@ -194,7 +198,7 @@ class ConsignmentApplicationServiceTests {
         allocateCode(1L);
 
         service.create(ACTOR_ID, "key",
-                new CreateConsignmentRequest(seller.getId(), List.of(piece.getId()), TODAY, null), IP);
+                new CreateConsignmentRequest(seller.getId(), List.of(piece.getId()), TODAY, 30, null), IP);
         assertThat(savedConsignment().getDueAt()).isEqualTo(Instant.parse("2026-10-31T02:59:59.999999Z"));
 
         assertApiError(() -> create(seller.getId(), List.of(piece.getId()), TODAY.minusDays(1)),
@@ -264,7 +268,7 @@ class ConsignmentApplicationServiceTests {
                 .when(idempotencyService).execute(eq(ACTOR_ID), eq("consignments.create"), eq("retry"), any(), any());
 
         IdempotentResponse response = service.create(ACTOR_ID, "retry",
-                new CreateConsignmentRequest(UUID.randomUUID(), List.of(UUID.randomUUID()), TODAY, null), IP);
+                new CreateConsignmentRequest(UUID.randomUUID(), List.of(UUID.randomUUID()), TODAY, 30, null), IP);
 
         assertThat(response.body().get("code").asText()).isEqualTo("C-2026-001");
         verifyNoInteractions(sellerRepository, pieceRepository, consignmentRepository, jdbcTemplate);
@@ -414,7 +418,7 @@ class ConsignmentApplicationServiceTests {
     }
 
     private void create(UUID sellerId, List<UUID> pieceIds, LocalDate dueDate) {
-        service.create(ACTOR_ID, "key", new CreateConsignmentRequest(sellerId, pieceIds, dueDate, null), IP);
+        service.create(ACTOR_ID, "key", new CreateConsignmentRequest(sellerId, pieceIds, dueDate, 30, null), IP);
     }
 
     private SellerEntity seller(SellerStatus status, int commissionRate) {
@@ -459,6 +463,95 @@ class ConsignmentApplicationServiceTests {
         consignment.setStatus(status);
         consignment.setCreatedBy(actor);
         return consignment;
+    }
+
+    @Test
+    void createStoresTheChosenPaymentTerm() {
+        SellerEntity seller = seller(SellerStatus.ATIVA, 30);
+        PieceEntity piece = piece("LU-0001", PieceStage.ETIQUETADA);
+        lockPieces(piece);
+        allocateCode(1L);
+
+        IdempotentResponse response = service.create(ACTOR_ID, "key",
+                new CreateConsignmentRequest(seller.getId(), List.of(piece.getId()), TODAY, 60, null), IP);
+
+        assertThat(savedConsignment().getPaymentTermDays()).isEqualTo(60);
+        assertThat(response.body().get("paymentTermDays").asInt()).isEqualTo(60);
+        assertThat(savedAudit().getAfterState()).containsEntry("paymentTermDays", 60);
+    }
+
+    @Test
+    void createRejectsAPaymentTermThatIsNotAllowed() {
+        assertThatThrownBy(() -> service.create(ACTOR_ID, "key",
+                new CreateConsignmentRequest(UUID.randomUUID(), List.of(UUID.randomUUID()), TODAY, 45, null), IP))
+                .isInstanceOfSatisfying(ApiException.class, exception -> {
+                    assertThat(exception.getStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(exception.getFields()).containsKey("paymentTermDays");
+                });
+        verify(consignmentRepository, never()).save(any());
+    }
+
+    @Test
+    void soldItemShowsWhenAndHowMuchTheSellerOwesToTheOwner() {
+        ItemFixture fixture = itemFixture(ConsignmentItemStatus.COM_VENDEDORA, PieceStage.CONSIGNACAO);
+        fixture.consignment.setPaymentTermDays(30);
+        fixture.item.setValueCentsSnapshot(10_001);
+        when(currentUserRoles.isOwner()).thenReturn(true);
+        when(itemRepository.countByConsignment_IdAndStatus(fixture.consignment.getId(),
+                ConsignmentItemStatus.COM_VENDEDORA)).thenReturn(0L);
+
+        IdempotentResponse response = service.markSold(ACTOR_ID, "key", fixture.consignment.getId(),
+                fixture.piece.getId(), null, IP);
+
+        com.fasterxml.jackson.databind.JsonNode item = response.body().get("items").get(0);
+        // Vendida em 2026-10-30 (09:00 em São Paulo) + 30 dias; deve 10.001 − 30% (3.000,3 → 3.000).
+        assertThat(item.get("paymentDueDate").asText()).isEqualTo("2026-11-29");
+        assertThat(item.get("amountDueCents").asLong()).isEqualTo(7_001);
+    }
+
+    @Test
+    void dueDateUsesTheStoreDayOfTheSale() {
+        ItemFixture fixture = itemFixture(ConsignmentItemStatus.VENDIDA, PieceStage.VENDIDA);
+        fixture.consignment.setPaymentTermDays(60);
+        fixture.item.setSoldAt(Instant.parse("2026-10-30T02:30:00Z"));
+        when(consignmentRepository.findById(fixture.consignment.getId())).thenReturn(Optional.of(fixture.consignment));
+
+        var details = service.get(fixture.consignment.getId());
+
+        // 23:30 de 29/10 em São Paulo conta como venda do dia 29.
+        assertThat(details.items().get(0).paymentDueDate()).isEqualTo(LocalDate.of(2026, 12, 28));
+    }
+
+    @Test
+    void staffSeesTheDueDateButNotTheAmountOwed() {
+        ItemFixture fixture = itemFixture(ConsignmentItemStatus.VENDIDA, PieceStage.VENDIDA);
+        fixture.consignment.setPaymentTermDays(30);
+        fixture.item.setSoldAt(NOW);
+        when(consignmentRepository.findById(fixture.consignment.getId())).thenReturn(Optional.of(fixture.consignment));
+
+        var item = service.get(fixture.consignment.getId()).items().get(0);
+
+        assertThat(item.paymentDueDate()).isEqualTo(LocalDate.of(2026, 11, 29));
+        assertThat(item.amountDueCents()).isNull();
+    }
+
+    @Test
+    void lotsWithoutPaymentTermAndUnsoldItemsHaveNoPaymentData() {
+        ItemFixture legacy = itemFixture(ConsignmentItemStatus.VENDIDA, PieceStage.VENDIDA);
+        legacy.item.setSoldAt(NOW);
+        when(consignmentRepository.findById(legacy.consignment.getId())).thenReturn(Optional.of(legacy.consignment));
+        lenient().when(currentUserRoles.isOwner()).thenReturn(true);
+
+        var details = service.get(legacy.consignment.getId());
+
+        assertThat(details.paymentTermDays()).isNull();
+        assertThat(details.items().get(0).paymentDueDate()).isNull();
+        assertThat(details.items().get(0).amountDueCents()).isNull();
+
+        legacy.consignment.setPaymentTermDays(30);
+        legacy.item.setStatus(ConsignmentItemStatus.COM_VENDEDORA);
+        legacy.item.setSoldAt(null);
+        assertThat(service.get(legacy.consignment.getId()).items().get(0).paymentDueDate()).isNull();
     }
 
     private ItemFixture itemFixture(ConsignmentItemStatus itemStatus, PieceStage pieceStage) {
@@ -506,6 +599,7 @@ class ConsignmentApplicationServiceTests {
     private static SettingsEntity settings() {
         SettingsEntity settings = new SettingsEntity();
         settings.setTimezone("America/Sao_Paulo");
+        settings.setPaymentTerms(List.of(30, 60, 90));
         return settings;
     }
 

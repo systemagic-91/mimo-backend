@@ -41,6 +41,8 @@ import br.com.luma.seller.mapper.SellerMapper;
 import br.com.luma.seller.repository.SellerMetricsRepository;
 import br.com.luma.seller.repository.SellerMetricsRepository.SellerOperationalMetrics;
 import br.com.luma.seller.repository.SellerMetricsRepository.SoldCommissionMetrics;
+import br.com.luma.seller.repository.SellerMetricsRepository.SoldItem;
+import br.com.luma.seller.dto.PaymentScheduleResponse;
 import br.com.luma.seller.repository.SellerRepository;
 import br.com.luma.setting.entity.SettingsEntity;
 import br.com.luma.setting.repository.SettingsRepository;
@@ -112,6 +114,53 @@ class SellerApplicationServiceTests {
         verify(auditLogRepository).save(audit.capture());
         assertThat(audit.getValue().getAction()).isEqualTo("SELLER_CREATED");
         assertThat(audit.getValue().getIpAddress()).isEqualTo(IP);
+    }
+
+    @Test
+    void paymentScheduleGroupsSalesByTermInTheStoreTimezone() {
+        UUID sellerId = UUID.randomUUID();
+        when(sellerRepository.findById(sellerId)).thenReturn(Optional.of(new SellerEntity()));
+        when(metricsRepository.findSoldItems(sellerId, Instant.parse("2026-10-01T03:00:00Z"),
+                Instant.parse("2026-11-01T03:00:00Z"))).thenReturn(List.of(
+                        new SoldItem(Instant.parse("2026-10-10T02:30:00Z"), 10_000, 30, 30),
+                        new SoldItem(Instant.parse("2026-10-20T15:00:00Z"), 5_001, 25, 30),
+                        new SoldItem(Instant.parse("2026-10-05T15:00:00Z"), 8_000, 40, 90),
+                        new SoldItem(Instant.parse("2026-10-06T15:00:00Z"), 2_000, 30, null)));
+
+        PaymentScheduleResponse schedule = service.paymentSchedule(sellerId, LocalDate.of(2026, 10, 1),
+                LocalDate.of(2026, 10, 31));
+
+        assertThat(schedule.groups()).containsExactly(
+                // 23:30 de 09/10 em São Paulo + 30 = 08/11; 20/10 + 30 = 19/11. Deve 7.000 + (5.001 − 1.250).
+                new PaymentScheduleResponse.Group(30, 2, 7_000 + 3_751, LocalDate.of(2026, 11, 8),
+                        LocalDate.of(2026, 11, 19)),
+                new PaymentScheduleResponse.Group(90, 1, 4_800, LocalDate.of(2027, 1, 3), LocalDate.of(2027, 1, 3)),
+                new PaymentScheduleResponse.Group(null, 1, 1_400, null, null));
+        assertThat(schedule.totalDueCents()).isEqualTo(10_751 + 4_800 + 1_400);
+    }
+
+    @Test
+    void paymentScheduleWithoutSalesIsEmpty() {
+        UUID sellerId = UUID.randomUUID();
+        when(sellerRepository.findById(sellerId)).thenReturn(Optional.of(new SellerEntity()));
+        when(metricsRepository.findSoldItems(any(), any(), any())).thenReturn(List.of());
+
+        PaymentScheduleResponse schedule = service.paymentSchedule(sellerId, LocalDate.of(2026, 10, 1),
+                LocalDate.of(2026, 10, 1));
+
+        assertThat(schedule.groups()).isEmpty();
+        assertThat(schedule.totalDueCents()).isZero();
+    }
+
+    @Test
+    void paymentScheduleRejectsAnInvertedPeriod() {
+        UUID sellerId = UUID.randomUUID();
+        when(sellerRepository.findById(sellerId)).thenReturn(Optional.of(new SellerEntity()));
+
+        assertThatThrownBy(() -> service.paymentSchedule(sellerId, LocalDate.of(2026, 10, 2),
+                LocalDate.of(2026, 10, 1)))
+                .isInstanceOfSatisfying(ApiException.class, exception -> assertThat(exception.getFields())
+                        .containsKey("period"));
     }
 
     @Test

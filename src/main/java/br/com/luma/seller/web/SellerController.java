@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.fasterxml.jackson.databind.JsonNode;
 
 import br.com.luma.seller.dto.CreateSellerRequest;
+import br.com.luma.seller.dto.PaymentScheduleResponse;
 import br.com.luma.seller.dto.SellerCommissionResponse;
 import br.com.luma.seller.dto.SellerListItemResponse;
 import br.com.luma.seller.dto.SellerStatsResponse;
@@ -107,6 +108,16 @@ public class SellerController {
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
         return sellerService.commission(sellerId, from, to);
+    }
+
+    @GetMapping("/{sellerId}/payment-schedule")
+    @Operation(summary = "Agenda de repasses: vendas do período agrupadas pelo prazo de pagamento",
+            description = "Cada venda vence em (dia da venda + prazo do lote); o valor devido é venda − comissão.")
+    @PreAuthorize("hasRole('OWNER')")
+    public PaymentScheduleResponse paymentSchedule(@PathVariable UUID sellerId,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        return sellerService.paymentSchedule(sellerId, from, to);
     }
 
     @GetMapping("/{sellerId}/consignments")

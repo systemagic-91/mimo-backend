@@ -52,6 +52,7 @@ import br.com.luma.shared.exception.ApiException;
 import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
 import br.com.luma.shared.metrics.BusinessMetrics;
+import br.com.luma.shared.security.CurrentUserRoles;
 import br.com.luma.upload.service.PhotoApplicationService;
 
 @ExtendWith(MockitoExtension.class)
@@ -81,7 +82,7 @@ class PieceApplicationServiceTests {
     @Mock
     private JdbcTemplate jdbcTemplate;
     @Mock
-    private PieceCostVisibility costVisibility;
+    private CurrentUserRoles costVisibility;
 
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
 
@@ -300,7 +301,7 @@ class PieceApplicationServiceTests {
     @Test
     void ownerInformsTheFactoryCostOnReceiptAndTheChangeIsAudited() {
         allocateSequence(3L);
-        when(costVisibility.currentUserIsOwner()).thenReturn(true);
+        when(costVisibility.isOwner()).thenReturn(true);
 
         service.receive(ACTOR_ID, "key",
                 new ReceivePieceRequest("Brinco", 12_900, PieceStage.FABRICA, null, 3_000L), IP);
@@ -338,7 +339,7 @@ class PieceApplicationServiceTests {
     void ownerInformsTheBathCostOnLabelingKeepingTheFactoryCost() {
         PieceEntity piece = piece(PieceStage.BANHO_OURO);
         piece.setFactoryCostCents(3_000L);
-        when(costVisibility.currentUserIsOwner()).thenReturn(true);
+        when(costVisibility.isOwner()).thenReturn(true);
 
         service.label(ACTOR_ID, "key", new LabelPieceRequest(piece.getId(), "Anel", 9_000, null, null, true, 800L), IP);
 
@@ -388,7 +389,7 @@ class PieceApplicationServiceTests {
         when(pieceRepository.findById(piece.getId())).thenReturn(Optional.of(piece));
         piece.setFactoryCostCents(3_000L);
         piece.setBathCostCents(800L);
-        when(costVisibility.currentUserIsOwner()).thenReturn(true);
+        when(costVisibility.isOwner()).thenReturn(true);
 
         PieceResponse response = service.get(piece.getId());
 

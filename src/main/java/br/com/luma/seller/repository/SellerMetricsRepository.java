@@ -79,6 +79,24 @@ public class SellerMetricsRepository {
                         resultSet.getLong("commission_cents")));
     }
 
+    public List<SoldItem> findSoldItems(UUID sellerId, Instant fromInclusive, Instant toExclusive) {
+        return jdbcTemplate.query("""
+                SELECT ci.sold_at, ci.value_cents_snapshot, ci.commission_rate_snapshot, c.payment_term_days
+                FROM consignment_items ci
+                JOIN consignments c ON c.id = ci.consignment_id
+                WHERE c.seller_id = :sellerId
+                  AND ci.status = 'VENDIDA'
+                  AND ci.sold_at >= :fromInclusive
+                  AND ci.sold_at < :toExclusive
+                ORDER BY ci.sold_at
+                """, Map.of("sellerId", sellerId,
+                    "fromInclusive", Timestamp.from(fromInclusive),
+                    "toExclusive", Timestamp.from(toExclusive)),
+                (resultSet, rowNumber) -> new SoldItem(resultSet.getTimestamp("sold_at").toInstant(),
+                        resultSet.getLong("value_cents_snapshot"), resultSet.getInt("commission_rate_snapshot"),
+                        resultSet.getObject("payment_term_days", Integer.class)));
+    }
+
     private static SellerOperationalMetrics mapRow(ResultSet resultSet, int rowNumber) throws SQLException {
         java.sql.Timestamp nextDue = resultSet.getTimestamp("next_due_at");
         return new SellerOperationalMetrics(
@@ -101,5 +119,8 @@ public class SellerMetricsRepository {
     }
 
     public record SoldCommissionMetrics(int soldCount, long soldValueCents, long commissionCents) {
+    }
+
+    public record SoldItem(Instant soldAt, long valueCents, int commissionRate, Integer paymentTermDays) {
     }
 }

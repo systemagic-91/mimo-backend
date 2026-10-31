@@ -11,5 +11,7 @@ import br.com.luma.shared.dto.ConsignmentItemResponse;
 public interface ConsignmentItemMapper {
     @Mapping(target = "consignmentId", source = "consignment.id")
     @Mapping(target = "pieceId", source = "piece.id")
+    @Mapping(target = "paymentDueDate", ignore = true)
+    @Mapping(target = "amountDueCents", ignore = true)
     ConsignmentItemResponse toResponse(ConsignmentItemEntity item);
 }

@@ -39,6 +39,7 @@ import br.com.luma.shared.exception.ApiException;
 import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
 import br.com.luma.shared.metrics.BusinessMetrics;
+import br.com.luma.shared.security.CurrentUserRoles;
 import br.com.luma.upload.service.PhotoApplicationService;
 
 @Service
@@ -58,7 +59,7 @@ public class PieceApplicationService {
     private final PhotoApplicationService photoService;
     private final AuditTrail auditTrail;
     private final BusinessMetrics metrics;
-    private final PieceCostVisibility costVisibility;
+    private final CurrentUserRoles currentUserRoles;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -66,7 +67,7 @@ public class PieceApplicationService {
     public PieceApplicationService(PieceRepository pieceRepository, PieceEventRepository pieceEventRepository,
             UserRepository userRepository, PieceMapper pieceMapper, PieceEventMapper pieceEventMapper,
             IdempotencyService idempotencyService, PhotoApplicationService photoService, AuditTrail auditTrail,
-            BusinessMetrics metrics, PieceCostVisibility costVisibility, JdbcTemplate jdbcTemplate,
+            BusinessMetrics metrics, CurrentUserRoles currentUserRoles, JdbcTemplate jdbcTemplate,
             ObjectMapper objectMapper, Clock clock) {
         this.pieceRepository = pieceRepository;
         this.pieceEventRepository = pieceEventRepository;
@@ -77,7 +78,7 @@ public class PieceApplicationService {
         this.photoService = photoService;
         this.auditTrail = auditTrail;
         this.metrics = metrics;
-        this.costVisibility = costVisibility;
+        this.currentUserRoles = currentUserRoles;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -92,7 +93,7 @@ public class PieceApplicationService {
                     java.util.Map.of("q", List.of("A busca deve ter no máximo 120 caracteres.")));
         }
         Pageable pageable = pagination.toPageable(ALLOWED_SORT_FIELDS);
-        boolean showCosts = costVisibility.currentUserIsOwner();
+        boolean showCosts = currentUserRoles.isOwner();
         Page<PieceResponse> page = pieceRepository.search(normalizedQuery, status, pageable)
                 .map(piece -> toResponse(piece, showCosts));
         return PieceListResponse.from(page, pieceRepository.sumValueCents(normalizedQuery, status));
@@ -100,7 +101,7 @@ public class PieceApplicationService {
 
     @Transactional(readOnly = true)
     public PieceResponse get(UUID pieceId) {
-        return toResponse(findPiece(pieceId), costVisibility.currentUserIsOwner());
+        return toResponse(findPiece(pieceId), currentUserRoles.isOwner());
     }
 
     @Transactional(readOnly = true)
@@ -123,7 +124,7 @@ public class PieceApplicationService {
     @Transactional
     public IdempotentResponse receive(UUID actorId, String idempotencyKey, ReceivePieceRequest request,
             String ipAddress) {
-        boolean owner = costVisibility.currentUserIsOwner();
+        boolean owner = currentUserRoles.isOwner();
         requireOwnerForCosts(owner, request.factoryCostCents());
         return idempotencyService.execute(actorId, "pieces.receive", idempotencyKey, request, () -> {
             if (request.stage() != PieceStage.FABRICA && request.stage() != PieceStage.BANHO_OURO) {
@@ -167,7 +168,7 @@ public class PieceApplicationService {
     @Transactional
     public IdempotentResponse label(UUID actorId, String idempotencyKey, LabelPieceRequest request,
             String ipAddress) {
-        boolean owner = costVisibility.currentUserIsOwner();
+        boolean owner = currentUserRoles.isOwner();
         requireOwnerForCosts(owner, request.bathCostCents());
         return idempotencyService.execute(actorId, "pieces.label", idempotencyKey, request, () -> {
             if (!request.backFromBath()) {

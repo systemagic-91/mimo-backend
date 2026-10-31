@@ -1,14 +1,14 @@
-package br.com.luma.piece.service;
+package br.com.luma.shared.security;
 
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 
-// Custo é informação sensível: só o owner vê e informa.
+// Para esconder dados só de owner (custos, valores devidos) nas respostas compartilhadas com staff.
 @Component
-public class PieceCostVisibility {
+public class CurrentUserRoles {
 
-    public boolean currentUserIsOwner() {
+    public boolean isOwner() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         return authentication != null && authentication.getAuthorities().stream()
                 .anyMatch(authority -> "ROLE_OWNER".equals(authority.getAuthority()));

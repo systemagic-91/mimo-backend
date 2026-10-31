@@ -62,6 +62,9 @@ import br.com.luma.shared.exception.ApiException;
 import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
 import br.com.luma.shared.metrics.BusinessMetrics;
+import br.com.luma.shared.security.CurrentUserRoles;
+import br.com.luma.shared.dto.ConsignmentItemResponse;
+import br.com.luma.setting.entity.SettingsEntity;
 import br.com.luma.shared.repository.AuditLogRepository;
 
 @Service
@@ -88,6 +91,7 @@ public class ConsignmentApplicationService {
     private final SellerMapper sellerMapper;
     private final IdempotencyService idempotencyService;
     private final BusinessMetrics metrics;
+    private final CurrentUserRoles currentUserRoles;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -97,8 +101,8 @@ public class ConsignmentApplicationService {
             PieceRepository pieceRepository, PieceEventRepository pieceEventRepository,
             SettingsRepository settingsRepository, UserRepository userRepository,
             AuditLogRepository auditLogRepository, ConsignmentItemMapper itemMapper, SellerMapper sellerMapper,
-            IdempotencyService idempotencyService, BusinessMetrics metrics, JdbcTemplate jdbcTemplate,
-            ObjectMapper objectMapper, Clock clock) {
+            IdempotencyService idempotencyService, BusinessMetrics metrics, CurrentUserRoles currentUserRoles,
+            JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, Clock clock) {
         this.consignmentRepository = consignmentRepository;
         this.itemRepository = itemRepository;
         this.sellerRepository = sellerRepository;
@@ -111,6 +115,7 @@ public class ConsignmentApplicationService {
         this.sellerMapper = sellerMapper;
         this.idempotencyService = idempotencyService;
         this.metrics = metrics;
+        this.currentUserRoles = currentUserRoles;
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -139,7 +144,8 @@ public class ConsignmentApplicationService {
             InHandSummary summary = inHand.get(consignment.getId());
             return new ConsignmentListItemResponse(consignment.getId(), consignment.getCode(),
                     consignment.getSeller().getId(), consignment.getDeliveredAt(), consignment.getDueAt(),
-                    CalendarDays.between(now, consignment.getDueAt(), zone), visualStatus(consignment, now), consignment.getNote(), consignment.getCreatedBy().getId(),
+                    CalendarDays.between(now, consignment.getDueAt(), zone), visualStatus(consignment, now),
+                    consignment.getPaymentTermDays(), consignment.getNote(), consignment.getCreatedBy().getId(),
                     consignment.getVersion(), sellerMapper.toResponse(consignment.getSeller()),
                     summary == null ? 0 : summary.getPiecesInHand(),
                     summary == null ? 0 : summary.getValueInHandCents());
@@ -166,9 +172,14 @@ public class ConsignmentApplicationService {
                 throw validation("pieceIds", "A mesma peça foi enviada mais de uma vez.");
             }
 
-            ZoneId zone = storeZone();
+            SettingsEntity settings = settings();
+            ZoneId zone = ZoneId.of(settings.getTimezone());
             Instant now = clock.instant();
             LocalDate today = now.atZone(zone).toLocalDate();
+            if (!settings.getPaymentTerms().contains(request.paymentTermDays())) {
+                throw validation("paymentTermDays", "O prazo de pagamento deve ser um dos prazos permitidos: "
+                        + settings.getPaymentTerms() + ".");
+            }
             if (request.dueDate().isBefore(today)) {
                 throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "DUE_DATE_IN_PAST",
                         "O vencimento não pode ser anterior a hoje.", Map.of("dueDate",
@@ -198,6 +209,7 @@ public class ConsignmentApplicationService {
             consignment.setDueAt(endOfDay(request.dueDate(), zone));
             consignment.setStatus(ConsignmentStatus.ABERTA);
             consignment.setNote(normalizeOptional(request.note()));
+            consignment.setPaymentTermDays(request.paymentTermDays());
             consignment.setCreatedBy(userRepository.getReferenceById(actorId));
             consignment = consignmentRepository.save(consignment);
 
@@ -230,11 +242,12 @@ public class ConsignmentApplicationService {
             state.put("sellerId", seller.getId().toString());
             state.put("pieceIds", pieces.stream().map(piece -> piece.getId().toString()).toList());
             state.put("dueAt", consignment.getDueAt().toString());
+            state.put("paymentTermDays", consignment.getPaymentTermDays());
             audit(actorId, consignment.getId(), "CONSIGNMENT_CREATED", ipAddress, state);
             metrics.consignmentCreated(items.size());
 
             consignmentRepository.flush();
-            return new IdempotentResponse(201, objectMapper.valueToTree(details(consignment, items, now)));
+            return new IdempotentResponse(201, objectMapper.valueToTree(details(consignment, items, now, zone)));
         });
     }
 
@@ -367,20 +380,34 @@ public class ConsignmentApplicationService {
 
     private ConsignmentDetailsResponse details(ConsignmentEntity consignment) {
         return details(consignment, itemRepository.findAllByConsignment_IdOrderByCodeSnapshotAsc(consignment.getId()),
-                clock.instant());
+                clock.instant(), storeZone());
     }
 
     private ConsignmentDetailsResponse details(ConsignmentEntity consignment, List<ConsignmentItemEntity> items,
-            Instant now) {
+            Instant now, ZoneId zone) {
+        boolean showAmounts = currentUserRoles.isOwner();
         List<ConsignmentItemEntity> sorted = items.stream()
                 .sorted((left, right) -> left.getCodeSnapshot().compareTo(right.getCodeSnapshot()))
                 .toList();
         return new ConsignmentDetailsResponse(consignment.getId(), consignment.getCode(),
                 consignment.getSeller().getId(), consignment.getDeliveredAt(), consignment.getDueAt(),
-                consignment.getStatus(), isLate(consignment, now), consignment.getNote(),
+                consignment.getStatus(), isLate(consignment, now), consignment.getPaymentTermDays(),
+                consignment.getNote(),
                 consignment.getCreatedBy().getId(), consignment.getVersion(),
                 sellerMapper.toResponse(consignment.getSeller()),
-                sorted.stream().map(itemMapper::toResponse).toList());
+                sorted.stream().map(item -> withPayment(item, consignment.getPaymentTermDays(), zone, showAmounts))
+                        .toList());
+    }
+
+    private ConsignmentItemResponse withPayment(ConsignmentItemEntity item, Integer paymentTermDays, ZoneId zone,
+            boolean showAmounts) {
+        ConsignmentItemResponse response = itemMapper.toResponse(item);
+        if (paymentTermDays == null || item.getStatus() != ConsignmentItemStatus.VENDIDA || item.getSoldAt() == null) {
+            return response;
+        }
+        return response.withPayment(PaymentSchedule.dueDate(item.getSoldAt(), paymentTermDays, zone),
+                showAmounts ? PaymentSchedule.amountDue(item.getValueCentsSnapshot(), item.getCommissionRateSnapshot())
+                        : null);
     }
 
     private Instant resolveActionTime(Instant requested, ConsignmentEntity consignment, String field) {
@@ -445,8 +472,11 @@ public class ConsignmentApplicationService {
     }
 
     private ZoneId storeZone() {
+        return ZoneId.of(settings().getTimezone());
+    }
+
+    private SettingsEntity settings() {
         return settingsRepository.findFirstBySingletonKeyTrue()
-                .map(settings -> ZoneId.of(settings.getTimezone()))
                 .orElseThrow(() -> new IllegalStateException("Store settings are missing"));
     }
 

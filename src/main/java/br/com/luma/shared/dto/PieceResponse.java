@@ -5,7 +5,7 @@ import java.util.UUID;
 
 import br.com.luma.shared.PieceStage;
 
-// Os custos vêm sempre null para staff (ver PieceCostVisibility).
+// Os custos vêm sempre null para staff (ver CurrentUserRoles).
 public record PieceResponse(UUID id, String code, String type, long valueCents, PieceStage status,
         String currentLocation, String photoUrl, String note, Long factoryCostCents, Long bathCostCents,
         Long totalCostCents, Instant createdAt, Instant updatedAt, long version) {

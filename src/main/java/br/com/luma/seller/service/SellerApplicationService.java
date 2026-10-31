@@ -22,7 +22,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import br.com.luma.auth.repository.UserRepository;
 import br.com.luma.consignment.mapper.ConsignmentMapper;
 import br.com.luma.consignment.repository.ConsignmentRepository;
+import br.com.luma.consignment.service.PaymentSchedule;
 import br.com.luma.seller.dto.CreateSellerRequest;
+import br.com.luma.seller.dto.PaymentScheduleResponse;
 import br.com.luma.seller.dto.SellerCommissionResponse;
 import br.com.luma.seller.dto.SellerListItemResponse;
 import br.com.luma.seller.dto.SellerStatsResponse;
@@ -31,6 +33,7 @@ import br.com.luma.seller.entity.SellerEntity;
 import br.com.luma.seller.mapper.SellerMapper;
 import br.com.luma.seller.repository.SellerMetricsRepository;
 import br.com.luma.seller.repository.SellerMetricsRepository.SellerOperationalMetrics;
+import br.com.luma.seller.repository.SellerMetricsRepository.SoldItem;
 import br.com.luma.seller.repository.SellerRepository;
 import br.com.luma.setting.entity.SettingsEntity;
 import br.com.luma.setting.repository.SettingsRepository;
@@ -210,6 +213,43 @@ public class SellerApplicationService {
         Instant toExclusive = to.plusDays(1).atStartOfDay(zone).toInstant();
         var metrics = metricsRepository.findCommission(sellerId, fromInclusive, toExclusive);
         return new SellerCommissionResponse(metrics.soldCount(), metrics.soldValueCents(), metrics.commissionCents());
+    }
+
+    @Transactional(readOnly = true)
+    @PreAuthorize("hasRole('OWNER')")
+    public PaymentScheduleResponse paymentSchedule(UUID sellerId, LocalDate from, LocalDate to) {
+        findSeller(sellerId);
+        if (from == null || to == null || from.isAfter(to)) {
+            throw validation("period", "Informe um período válido, com from menor ou igual a to.");
+        }
+        ZoneId zone = ZoneId.of(getSettings().getTimezone());
+        List<SoldItem> sold = metricsRepository.findSoldItems(sellerId, from.atStartOfDay(zone).toInstant(),
+                to.plusDays(1).atStartOfDay(zone).toInstant());
+
+        Map<Integer, List<SoldItem>> byTerm = new java.util.TreeMap<>(
+                java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder()));
+        sold.forEach(item -> byTerm.computeIfAbsent(item.paymentTermDays(), term -> new java.util.ArrayList<>())
+                .add(item));
+        List<PaymentScheduleResponse.Group> groups = byTerm.entrySet().stream()
+                .map(entry -> group(entry.getKey(), entry.getValue(), zone))
+                .toList();
+        long total = groups.stream().mapToLong(PaymentScheduleResponse.Group::amountDueCents).sum();
+        return new PaymentScheduleResponse(groups, total);
+    }
+
+    private static PaymentScheduleResponse.Group group(Integer paymentTermDays, List<SoldItem> items, ZoneId zone) {
+        long amountDue = items.stream()
+                .mapToLong(item -> PaymentSchedule.amountDue(item.valueCents(), item.commissionRate()))
+                .sum();
+        if (paymentTermDays == null) {
+            return new PaymentScheduleResponse.Group(null, items.size(), amountDue, null, null);
+        }
+        List<LocalDate> dueDates = items.stream()
+                .map(item -> PaymentSchedule.dueDate(item.soldAt(), paymentTermDays, zone))
+                .sorted()
+                .toList();
+        return new PaymentScheduleResponse.Group(paymentTermDays, items.size(), amountDue, dueDates.get(0),
+                dueDates.get(dueDates.size() - 1));
     }
 
     @Transactional(readOnly = true)

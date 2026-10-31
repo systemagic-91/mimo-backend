@@ -187,7 +187,8 @@ class LumaApplicationTests {
     @Test
     void staffCannotOpenDashboardOrReports() throws Exception {
         for (String path : java.util.List.of("/api/v1/dashboard", "/api/v1/reports/overdue",
-                "/api/v1/reports/stale-pieces", "/api/v1/reports/turnover?from=2026-10-01&to=2026-10-31")) {
+                "/api/v1/reports/stale-pieces", "/api/v1/reports/turnover?from=2026-10-01&to=2026-10-31",
+                "/api/v1/sellers/" + UUID.randomUUID() + "/payment-schedule?from=2026-10-01&to=2026-10-31")) {
             mockMvc.perform(get(path).with(role("STAFF")))
                     .andExpect(status().isForbidden())
                     .andExpect(jsonPath("$.code").value("FORBIDDEN"));
