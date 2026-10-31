@@ -26,7 +26,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 
-import br.com.luma.auth.dto.AuthResponse;
 import br.com.luma.auth.dto.ChangePasswordRequest;
 import br.com.luma.auth.dto.LoginRequest;
 import br.com.luma.auth.entity.RefreshTokenEntity;
@@ -35,6 +34,7 @@ import br.com.luma.auth.exception.AuthException;
 import br.com.luma.auth.mapper.UserMapper;
 import br.com.luma.auth.repository.RefreshTokenRepository;
 import br.com.luma.auth.repository.UserRepository;
+import br.com.luma.auth.service.AuthApplicationService.IssuedSession;
 import br.com.luma.shared.Role;
 
 @ExtendWith(MockitoExtension.class)
@@ -75,17 +75,18 @@ class AuthApplicationServiceTests {
         when(userRepository.findByEmailIgnoreCase("owner@example.com")).thenReturn(Optional.of(user));
         stubAccessToken(user);
 
-        AuthResponse response = service.login(new LoginRequest(" Owner@Example.com ", PASSWORD), CLIENT_IP);
+        IssuedSession session = service.login(new LoginRequest(" Owner@Example.com ", PASSWORD), CLIENT_IP);
 
-        assertThat(response.accessToken()).isEqualTo("access-token");
-        assertThat(response.refreshToken()).isNotBlank();
+        assertThat(session.response().accessToken()).isEqualTo("access-token");
+        assertThat(session.refreshToken()).isNotBlank();
         ArgumentCaptor<RefreshTokenEntity> saved = ArgumentCaptor.forClass(RefreshTokenEntity.class);
         verify(refreshTokenRepository).save(saved.capture());
         assertThat(saved.getValue().getTokenHash())
-                .isEqualTo(refreshTokenHasher.hash(response.refreshToken()))
-                .isNotEqualTo(response.refreshToken());
+                .isEqualTo(refreshTokenHasher.hash(session.refreshToken()))
+                .isNotEqualTo(session.refreshToken());
         assertThat(saved.getValue().getExpiresAt()).isEqualTo(NOW.plus(REFRESH_TTL));
-        verify(loginRateLimiter).recordSuccess(CLIENT_IP);
+        verify(loginRateLimiter).acquire(CLIENT_IP, "owner@example.com");
+        verify(loginRateLimiter).recordSuccess(CLIENT_IP, "owner@example.com");
         verify(auditService).recordLogin(user.getId(), "LOGIN_SUCCEEDED", "SUCCESS", CLIENT_IP);
     }
 
@@ -103,7 +104,7 @@ class AuthApplicationServiceTests {
         verify(auditService).recordLogin(isNull(), eq("LOGIN_FAILED"), eq("INVALID_CREDENTIALS"), eq(CLIENT_IP));
         verify(auditService).recordLogin(user.getId(), "LOGIN_FAILED", "INVALID_CREDENTIALS", CLIENT_IP);
         verify(refreshTokenRepository, never()).save(any());
-        verify(loginRateLimiter, never()).recordSuccess(any());
+        verify(loginRateLimiter, never()).recordSuccess(any(), any());
     }
 
     @Test
@@ -119,7 +120,7 @@ class AuthApplicationServiceTests {
     @Test
     void rateLimitedLoginDoesNotCheckCredentials() {
         doThrow(new AuthException(HttpStatus.TOO_MANY_REQUESTS, "RATE_LIMITED", "Muitas tentativas."))
-                .when(loginRateLimiter).acquire(CLIENT_IP);
+                .when(loginRateLimiter).acquire(CLIENT_IP, "owner@example.com");
 
         assertApiError(() -> service.login(new LoginRequest("owner@example.com", PASSWORD), CLIENT_IP),
                 HttpStatus.TOO_MANY_REQUESTS, "RATE_LIMITED");
@@ -132,12 +133,12 @@ class AuthApplicationServiceTests {
         RefreshTokenEntity oldToken = refreshToken(user, "old-refresh", NOW.plus(Duration.ofDays(1)), null);
         stubAccessToken(user);
 
-        AuthResponse response = service.refresh("old-refresh");
+        IssuedSession session = service.refresh("old-refresh");
 
-        assertThat(response.refreshToken()).isNotEqualTo("old-refresh");
+        assertThat(session.refreshToken()).isNotEqualTo("old-refresh");
         assertThat(oldToken.getRevokedAt()).isEqualTo(NOW);
         assertThat(oldToken.getReplacedBy()).isNotNull();
-        assertThat(oldToken.getReplacedBy().getTokenHash()).isEqualTo(refreshTokenHasher.hash(response.refreshToken()));
+        assertThat(oldToken.getReplacedBy().getTokenHash()).isEqualTo(refreshTokenHasher.hash(session.refreshToken()));
         verify(refreshTokenRepository).save(oldToken);
     }
 
@@ -181,16 +182,29 @@ class AuthApplicationServiceTests {
     }
 
     @Test
-    void logoutRevokesOnlyTheAuthenticatedUsersToken() {
+    void logoutRevokesTheCookieToken() {
         UserEntity owner = user(true);
         RefreshTokenEntity token = refreshToken(owner, "owner-refresh", NOW.plus(Duration.ofDays(1)), null);
 
-        service.logout("owner-refresh", UUID.randomUUID());
-        assertThat(token.getRevokedAt()).isNull();
+        service.logout("owner-refresh");
 
-        service.logout("owner-refresh", owner.getId());
         assertThat(token.getRevokedAt()).isEqualTo(NOW);
         verify(refreshTokenRepository).save(token);
+    }
+
+    @Test
+    void logoutIgnoresUnknownOrAlreadyRevokedTokens() {
+        UserEntity owner = user(true);
+        RefreshTokenEntity revoked = refreshToken(owner, "revoked-refresh", NOW.plus(Duration.ofDays(1)),
+                NOW.minusSeconds(60));
+        when(refreshTokenRepository.findForUpdateByTokenHash(refreshTokenHasher.hash("unknown")))
+                .thenReturn(Optional.empty());
+
+        service.logout("unknown");
+        service.logout("revoked-refresh");
+
+        assertThat(revoked.getRevokedAt()).isEqualTo(NOW.minusSeconds(60));
+        verify(refreshTokenRepository, never()).save(any());
     }
 
     @Test

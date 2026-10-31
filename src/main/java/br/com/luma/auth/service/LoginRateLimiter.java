@@ -30,25 +30,34 @@ public class LoginRateLimiter {
         this.windowDuration = windowDuration;
     }
 
-    public synchronized void acquire(String clientIp) {
+    // Conta por IP e por e-mail: o IP vem do X-Forwarded-For e pode ser inventado por quem chama o Railway direto.
+    public synchronized void acquire(String clientIp, String email) {
         Instant now = clock.instant();
         removeExpired(now);
-        Window window = windows.get(clientIp);
+        Window ipWindow = window("ip:" + clientIp, now);
+        Window emailWindow = window("email:" + email, now);
+        if (ipWindow.attempts >= maxAttempts || emailWindow.attempts >= maxAttempts) {
+            throw rateLimited();
+        }
+        ipWindow.attempts++;
+        emailWindow.attempts++;
+    }
+
+    public synchronized void recordSuccess(String clientIp, String email) {
+        windows.remove("ip:" + clientIp);
+        windows.remove("email:" + email);
+    }
+
+    private Window window(String key, Instant now) {
+        Window window = windows.get(key);
         if (window == null) {
             if (windows.size() >= MAX_TRACKED_CLIENTS) {
                 throw rateLimited();
             }
             window = new Window(now);
-            windows.put(clientIp, window);
+            windows.put(key, window);
         }
-        if (window.attempts >= maxAttempts) {
-            throw rateLimited();
-        }
-        window.attempts++;
-    }
-
-    public synchronized void recordSuccess(String clientIp) {
-        windows.remove(clientIp);
+        return window;
     }
 
     private void removeExpired(Instant now) {

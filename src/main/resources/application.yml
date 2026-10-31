@@ -1,5 +1,6 @@
 server:
   port: ${PORT:8080}
+  forward-headers-strategy: framework
 
 spring:
   application:
@@ -29,6 +30,10 @@ app:
       secret: ${JWT_SECRET:}
       access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:PT15M}
       refresh-token-ttl: ${JWT_REFRESH_TOKEN_TTL:P30D}
+    refresh-cookie:
+      name: ${REFRESH_COOKIE_NAME:luma_refresh}
+      secure: ${REFRESH_COOKIE_SECURE:true}
+      same-site: ${REFRESH_COOKIE_SAME_SITE:Strict}
     bootstrap-owner:
       enabled: ${BOOTSTRAP_OWNER_ENABLED:false}
       name: ${BOOTSTRAP_OWNER_NAME:}

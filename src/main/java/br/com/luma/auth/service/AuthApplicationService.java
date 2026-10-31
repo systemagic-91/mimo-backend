@@ -67,9 +67,9 @@ public class AuthApplicationService {
     }
 
     @Transactional
-    public AuthResponse login(LoginRequest request, String clientIp) {
-        loginRateLimiter.acquire(clientIp);
+    public IssuedSession login(LoginRequest request, String clientIp) {
         String email = request.email().trim().toLowerCase(java.util.Locale.ROOT);
+        loginRateLimiter.acquire(clientIp, email);
         UserEntity user = userRepository.findByEmailIgnoreCase(email).orElse(null);
         String hash = user == null ? dummyPasswordHash : user.getPasswordHash();
         boolean passwordMatches = passwordEncoder.matches(request.password(), hash);
@@ -83,13 +83,13 @@ public class AuthApplicationService {
             throw new AuthException(HttpStatus.FORBIDDEN, "USER_INACTIVE", "Usuário inativo.");
         }
 
-        loginRateLimiter.recordSuccess(clientIp);
+        loginRateLimiter.recordSuccess(clientIp, email);
         auditService.recordLogin(user.getId(), "LOGIN_SUCCEEDED", "SUCCESS", clientIp);
         return issueSession(user, clock.instant());
     }
 
     @Transactional(noRollbackFor = AuthException.class)
-    public AuthResponse refresh(String rawRefreshToken) {
+    public IssuedSession refresh(String rawRefreshToken) {
         Instant now = clock.instant();
         String hash = refreshTokenHasher.hash(rawRefreshToken);
         RefreshTokenEntity oldToken = refreshTokenRepository.findForUpdateByTokenHash(hash)
@@ -117,11 +117,10 @@ public class AuthApplicationService {
         return toResponse(user, replacement);
     }
 
+    // Público: ter o cookie já prova a posse da sessão, e o logout precisa funcionar com o access token vencido.
     @Transactional
-    @PreAuthorize("isAuthenticated()")
-    public void logout(String rawRefreshToken, UUID authenticatedUserId) {
+    public void logout(String rawRefreshToken) {
         refreshTokenRepository.findForUpdateByTokenHash(refreshTokenHasher.hash(rawRefreshToken))
-                .filter(token -> token.getUser().getId().equals(authenticatedUserId))
                 .filter(token -> token.getRevokedAt() == null)
                 .ifPresent(token -> {
                     token.setRevokedAt(clock.instant());
@@ -160,7 +159,7 @@ public class AuthApplicationService {
         auditService.recordLogin(userId, "PASSWORD_CHANGED", "SUCCESS", clientIp);
     }
 
-    private AuthResponse issueSession(UserEntity user, Instant now) {
+    private IssuedSession issueSession(UserEntity user, Instant now) {
         return toResponse(user, createSessionTokens(user, now));
     }
 
@@ -179,10 +178,11 @@ public class AuthApplicationService {
         return new SessionTokens(accessToken, rawRefreshToken, refreshToken);
     }
 
-    private AuthResponse toResponse(UserEntity user, SessionTokens tokens) {
-        return new AuthResponse(userMapper.toResponse(user),
+    private IssuedSession toResponse(UserEntity user, SessionTokens tokens) {
+        AuthResponse response = new AuthResponse(userMapper.toResponse(user),
                 new SessionResponse(tokens.accessToken().issuedAt(), tokens.accessToken().expiresAt()),
-                tokens.accessToken().value(), tokens.rawRefreshToken());
+                tokens.accessToken().value());
+        return new IssuedSession(response, tokens.rawRefreshToken());
     }
 
     private static AuthException invalidRefreshToken() {
@@ -191,6 +191,10 @@ public class AuthApplicationService {
 
     private static AuthException invalidAccessToken() {
         return new AuthException(HttpStatus.UNAUTHORIZED, "INVALID_ACCESS_TOKEN", "Sessão inválida ou expirada.");
+    }
+
+    // O refresh token sai daqui só para o controller gravar no cookie; nunca vai no corpo da resposta.
+    public record IssuedSession(AuthResponse response, String refreshToken) {
     }
 
     private record SessionTokens(AccessTokenService.IssuedAccessToken accessToken,

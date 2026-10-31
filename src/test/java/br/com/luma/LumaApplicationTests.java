@@ -5,6 +5,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -26,10 +28,17 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
+import br.com.luma.auth.dto.AuthResponse;
+import br.com.luma.auth.dto.SessionResponse;
+import br.com.luma.auth.exception.AuthException;
+import br.com.luma.auth.service.AuthApplicationService;
+import br.com.luma.auth.service.AuthApplicationService.IssuedSession;
 import br.com.luma.dashboard.dto.DashboardResponse;
 import br.com.luma.dashboard.service.DashboardApplicationService;
 import br.com.luma.report.dto.OverdueReportResponse;
 import br.com.luma.report.service.ReportApplicationService;
+import br.com.luma.shared.Role;
+import br.com.luma.shared.dto.UserResponse;
 import br.com.luma.upload.service.PhotoApplicationService;
 import br.com.luma.upload.service.PhotoContent;
 
@@ -56,6 +65,103 @@ class LumaApplicationTests {
 
     @MockitoBean
     private ReportApplicationService reportService;
+
+    @MockitoBean
+    private AuthApplicationService authService;
+
+    private static final AuthResponse AUTH_RESPONSE = new AuthResponse(
+            new UserResponse(UUID.randomUUID(), "Dona", "dona@loja.com", Role.OWNER, true, false, null, null),
+            new SessionResponse(java.time.Instant.parse("2026-10-31T12:00:00Z"),
+                    java.time.Instant.parse("2026-10-31T12:15:00Z")),
+            "access-token");
+
+    @Test
+    void loginPutsTheRefreshTokenOnlyInAnHttpOnlyCookie() throws Exception {
+        when(authService.login(any(), eq("198.51.100.7")))
+                .thenReturn(new IssuedSession(AUTH_RESPONSE, "refresh-secret"));
+
+        mockMvc.perform(post("/api/v1/auth/login").header("X-Forwarded-For", "198.51.100.7, 10.0.0.1")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"email\":\"dona@loja.com\",\"password\":\"Senha-Forte-123\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessToken").value("access-token"))
+                .andExpect(jsonPath("$.refreshToken").doesNotExist())
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("refresh-secret"))))
+                .andExpect(header().string("Set-Cookie", org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.startsWith("luma_refresh=refresh-secret; Path=/api/v1/auth; Max-Age=2592000;"),
+                        org.hamcrest.Matchers.containsString("HttpOnly"),
+                        org.hamcrest.Matchers.containsString("Secure"),
+                        org.hamcrest.Matchers.containsString("SameSite=Strict"))));
+    }
+
+    @Test
+    void refreshReadsTheCookieAndRotatesIt() throws Exception {
+        when(authService.refresh("old-refresh")).thenReturn(new IssuedSession(AUTH_RESPONSE, "new-refresh"));
+
+        mockMvc.perform(post("/api/v1/auth/refresh").header("Origin", "http://localhost:5173")
+                .cookie(new jakarta.servlet.http.Cookie("luma_refresh", "old-refresh")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.refreshToken").doesNotExist())
+                .andExpect(header().string("Set-Cookie",
+                        org.hamcrest.Matchers.startsWith("luma_refresh=new-refresh;")));
+    }
+
+    @Test
+    void refreshWithoutCookieOrWithInvalidTokenClearsTheCookie() throws Exception {
+        mockMvc.perform(post("/api/v1/auth/refresh"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("INVALID_REFRESH_TOKEN"))
+                .andExpect(header().string("Set-Cookie", org.hamcrest.Matchers.startsWith("luma_refresh=; Path=/api/v1/auth; Max-Age=0;")));
+
+        when(authService.refresh("revoked")).thenThrow(new AuthException(
+                org.springframework.http.HttpStatus.UNAUTHORIZED, "INVALID_REFRESH_TOKEN", "x"));
+        mockMvc.perform(post("/api/v1/auth/refresh").cookie(new jakarta.servlet.http.Cookie("luma_refresh", "revoked")))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("Set-Cookie", org.hamcrest.Matchers.containsString("Max-Age=0")));
+    }
+
+    @Test
+    void refreshAndLogoutRejectUnknownOrigins() throws Exception {
+        for (String path : java.util.List.of("/api/v1/auth/refresh", "/api/v1/auth/logout")) {
+            // Origem estrangeira: o CORS barra antes do controller.
+            mockMvc.perform(post(path).header("Origin", "https://evil.example")
+                    .cookie(new jakarta.servlet.http.Cookie("luma_refresh", "token")))
+                    .andExpect(status().isForbidden());
+            // Pedido que parece da mesma origem (fora do CORS): o OriginGuard confere a lista.
+            mockMvc.perform(post(path).header("Origin", "https://evil.example")
+                    .with(request -> {
+                        request.setScheme("https");
+                        request.setServerName("evil.example");
+                        request.setServerPort(443);
+                        return request;
+                    })
+                    .cookie(new jakarta.servlet.http.Cookie("luma_refresh", "token")))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.code").value("ORIGIN_NOT_ALLOWED"));
+        }
+        org.mockito.Mockito.verifyNoInteractions(authService);
+    }
+
+    @Test
+    void logoutWorksWithAnExpiredAccessTokenAndClearsTheCookie() throws Exception {
+        mockMvc.perform(post("/api/v1/auth/logout").header("Origin", "http://localhost:5173")
+                .header("Authorization", "Bearer expired.or.invalid")
+                .cookie(new jakarta.servlet.http.Cookie("luma_refresh", "session-token")))
+                .andExpect(status().isNoContent())
+                .andExpect(header().string("Set-Cookie", org.hamcrest.Matchers.startsWith("luma_refresh=; Path=/api/v1/auth; Max-Age=0;")));
+        org.mockito.Mockito.verify(authService).logout("session-token");
+
+        mockMvc.perform(post("/api/v1/auth/logout"))
+                .andExpect(status().isNoContent())
+                .andExpect(header().string("Set-Cookie", org.hamcrest.Matchers.containsString("Max-Age=0")));
+    }
+
+    @Test
+    void protectedRoutesStillRejectInvalidBearerTokens() throws Exception {
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer expired.or.invalid"))
+                .andExpect(status().isUnauthorized());
+    }
 
     @Test
     void metricsAreOnlyForOwners() throws Exception {
@@ -133,9 +239,8 @@ class LumaApplicationTests {
         mockMvc.perform(post("/api/v1/auth/change-password").with(mustChangePassword())
                 .contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isBadRequest());
-        mockMvc.perform(post("/api/v1/auth/logout").with(mustChangePassword())
-                .contentType(MediaType.APPLICATION_JSON).content("{}"))
-                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/api/v1/auth/logout").with(mustChangePassword()))
+                .andExpect(status().isNoContent());
     }
 
     private static org.springframework.test.web.servlet.request.RequestPostProcessor mustChangePassword() {

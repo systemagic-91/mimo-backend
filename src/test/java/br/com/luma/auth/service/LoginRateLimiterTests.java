@@ -22,11 +22,11 @@ class LoginRateLimiterTests {
 
     @Test
     void blocksAfterMaxAttemptsWithinTheWindow() {
-        limiter.acquire("10.0.0.1");
-        limiter.acquire("10.0.0.1");
-        limiter.acquire("10.0.0.1");
+        limiter.acquire("10.0.0.1", "a@loja.com");
+        limiter.acquire("10.0.0.1", "a@loja.com");
+        limiter.acquire("10.0.0.1", "a@loja.com");
 
-        assertThatThrownBy(() -> limiter.acquire("10.0.0.1"))
+        assertThatThrownBy(() -> limiter.acquire("10.0.0.1", "a@loja.com"))
                 .isInstanceOfSatisfying(AuthException.class,
                         exception -> org.assertj.core.api.Assertions.assertThat(exception.getCode())
                                 .isEqualTo("RATE_LIMITED"));
@@ -34,33 +34,55 @@ class LoginRateLimiterTests {
 
     @Test
     void tracksEachClientIpSeparately() {
-        limiter.acquire("10.0.0.1");
-        limiter.acquire("10.0.0.1");
-        limiter.acquire("10.0.0.1");
+        limiter.acquire("10.0.0.1", "a@loja.com");
+        limiter.acquire("10.0.0.1", "a@loja.com");
+        limiter.acquire("10.0.0.1", "a@loja.com");
 
-        assertThatCode(() -> limiter.acquire("10.0.0.2")).doesNotThrowAnyException();
+        assertThatCode(() -> limiter.acquire("10.0.0.2", "b@loja.com")).doesNotThrowAnyException();
+    }
+
+    @Test
+    void blocksAnEmailEvenWhenEveryAttemptComesFromADifferentIp() {
+        limiter.acquire("10.0.0.1", "a@loja.com");
+        limiter.acquire("10.0.0.2", "a@loja.com");
+        limiter.acquire("10.0.0.3", "a@loja.com");
+
+        assertThatThrownBy(() -> limiter.acquire("10.0.0.4", "a@loja.com")).isInstanceOf(AuthException.class);
+        assertThatCode(() -> limiter.acquire("10.0.0.4", "b@loja.com")).doesNotThrowAnyException();
+    }
+
+    @Test
+    void blockedAttemptDoesNotCountAgainstTheOtherKey() {
+        limiter.acquire("10.0.0.1", "a@loja.com");
+        limiter.acquire("10.0.0.1", "b@loja.com");
+        limiter.acquire("10.0.0.1", "c@loja.com");
+        assertThatThrownBy(() -> limiter.acquire("10.0.0.1", "d@loja.com")).isInstanceOf(AuthException.class);
+
+        limiter.acquire("10.0.0.2", "d@loja.com");
+        limiter.acquire("10.0.0.3", "d@loja.com");
+        assertThatCode(() -> limiter.acquire("10.0.0.4", "d@loja.com")).doesNotThrowAnyException();
     }
 
     @Test
     void successfulLoginResetsTheCounter() {
-        limiter.acquire("10.0.0.1");
-        limiter.acquire("10.0.0.1");
-        limiter.recordSuccess("10.0.0.1");
+        limiter.acquire("10.0.0.1", "a@loja.com");
+        limiter.acquire("10.0.0.1", "a@loja.com");
+        limiter.recordSuccess("10.0.0.1", "a@loja.com");
 
-        limiter.acquire("10.0.0.1");
-        limiter.acquire("10.0.0.1");
-        assertThatCode(() -> limiter.acquire("10.0.0.1")).doesNotThrowAnyException();
+        limiter.acquire("10.0.0.1", "a@loja.com");
+        limiter.acquire("10.0.0.1", "a@loja.com");
+        assertThatCode(() -> limiter.acquire("10.0.0.1", "a@loja.com")).doesNotThrowAnyException();
     }
 
     @Test
     void windowExpiryAllowsNewAttempts() {
-        limiter.acquire("10.0.0.1");
-        limiter.acquire("10.0.0.1");
-        limiter.acquire("10.0.0.1");
+        limiter.acquire("10.0.0.1", "a@loja.com");
+        limiter.acquire("10.0.0.1", "a@loja.com");
+        limiter.acquire("10.0.0.1", "a@loja.com");
 
         clock.advance(WINDOW);
 
-        assertThatCode(() -> limiter.acquire("10.0.0.1")).doesNotThrowAnyException();
+        assertThatCode(() -> limiter.acquire("10.0.0.1", "a@loja.com")).doesNotThrowAnyException();
     }
 
     private static final class MutableClock extends Clock {
