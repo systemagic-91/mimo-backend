@@ -53,7 +53,7 @@ public class SettingsApplicationService {
     }
 
     @Transactional(readOnly = true)
-    @PreAuthorize("hasRole('OWNER')")
+    @PreAuthorize("hasAnyRole('OWNER', 'STAFF')")
     public SettingsResponse get() {
         return settingsMapper.toResponse(getSettings());
     }

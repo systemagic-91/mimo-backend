@@ -33,7 +33,6 @@ import jakarta.validation.Valid;
 @RequestMapping("/api/v1/settings")
 @Tag(name = "Configurações", description = "Parâmetros da loja e faixas de comissão.")
 @SecurityRequirement(name = "bearerAuth")
-@PreAuthorize("hasRole('OWNER')")
 public class SettingsController {
 
     private final SettingsApplicationService settingsService;
@@ -43,12 +42,14 @@ public class SettingsController {
     }
 
     @GetMapping
-    @Operation(summary = "Consulta as configurações da loja")
+    @PreAuthorize("hasAnyRole('OWNER', 'STAFF')")
+    @Operation(summary = "Consulta as configurações da loja (owner e staff)")
     public SettingsResponse get() {
         return settingsService.get();
     }
 
     @PatchMapping
+    @PreAuthorize("hasRole('OWNER')")
     @Operation(summary = "Atualiza configurações da loja", parameters = @Parameter(ref = "#/components/parameters/IdempotencyKey"))
     public ResponseEntity<JsonNode> update(@Valid @RequestBody UpdateSettingsRequest request,
             @AuthenticationPrincipal Jwt jwt,
