@@ -4,6 +4,8 @@ Manual de operação: como rodar, configurar, publicar, acompanhar e fazer backu
 
 - Tracing (seguir uma requisição pelos logs): [TRACING.md](TRACING.md)
 - Métricas (números de saúde do sistema): [METRICAS.md](METRICAS.md)
+- Ambiente local, testes e convenções da API: [DESENVOLVIMENTO.md](DESENVOLVIMENTO.md)
+- Tokens, sessão e usuários: [AUTENTICACAO.md](AUTENTICACAO.md)
 
 ## 1. Rodar localmente
 

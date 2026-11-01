@@ -1,95 +1,49 @@
 # Mimo Backend
 
-Backend base para a API Luma, usando Java 21, Spring Boot 3, Gradle e PostgreSQL.
+API da Luma: controla as peças da loja desde o recebimento e a etiquetagem até a consignação com as vendedoras, a venda ou devolução, a comissão e a agenda de repasses.
 
-Documentação de operação:
+Java 21, Spring Boot 3.5, Gradle e PostgreSQL 16 (migrations com Flyway).
 
-- [RUNBOOK.md](RUNBOOK.md): variáveis de ambiente, primeiro owner, migrations, deploy no Railway, CI, backup/restauração e retenção de dados.
-- [TRACING.md](TRACING.md): como seguir uma requisição pelos logs com `traceId`.
-- [METRICAS.md](METRICAS.md): métricas técnicas e da loja em `/actuator/metrics` e `/actuator/prometheus`.
+## Documentação
 
-## Desenvolvimento local
+| Arquivo | Conteúdo |
+|---|---|
+| [DESENVOLVIMENTO.md](DESENVOLVIMENTO.md) | Rodar localmente, primeiro login, testes, convenções da API e regras de domínio |
+| [AUTENTICACAO.md](AUTENTICACAO.md) | Tokens, cookie de sessão, papéis e gestão de usuários |
+| [RUNBOOK.md](RUNBOOK.md) | Variáveis de ambiente, primeiro owner, migrations, deploy no Railway, CI, backup e retenção de dados |
+| [TRACING.md](TRACING.md) | Como seguir uma requisição pelos logs com `traceId` |
+| [METRICAS.md](METRICAS.md) | Métricas técnicas e da loja em `/actuator/metrics` e `/actuator/prometheus` |
 
-1. Copie o arquivo `.env.example` para `.env` e defina uma senha local do banco.
-2. Inicie o PostgreSQL com `docker compose up -d`.
-3. Execute a aplicação com `./gradlew bootRun` (Windows: `gradlew.bat bootRun`).
-4. Execute os testes com `./gradlew clean check` (Windows: `gradlew.bat clean check`).
-
-O perfil padrão `local` lê as configurações do banco e do CORS a partir do ambiente. Os testes não precisam de Docker nem de PostgreSQL: as regras de negócio são cobertas por testes unitários com JUnit 5 e Mockito (repositories mockados), e os testes de contexto/segurança HTTP usam H2 em memória. O projeto não usa Testcontainers nem testes integrados automatizados; constraints, triggers e migrations ficam garantidos pelo próprio PostgreSQL, e a BACK_10 passa a validar as migrations no CI contra um banco limpo. `DB_PORT` altera a porta host publicada pelo Compose.
-
-As configurações do banco e do CORS de produção não possuem credenciais ou valores padrão versionados.
-
-## Autenticação
-
-Os JWTs de acesso usam HS256 com tempo de vida padrão de 15 minutos. Defina `JWT_SECRET` como uma chave aleatória em Base64 com pelo menos 32 bytes em produção; os perfis local/teste geram uma chave efêmera quando ela não está definida, então os tokens deixam de funcionar após reinicialização. Os refresh tokens são opacos, armazenados apenas como hashes SHA-256, rotacionados no uso e revogados no logout, na troca de senha ou na detecção de reutilização. Um token reutilizado revoga todas as sessões de refresh ativas daquele usuário.
-
-O refresh token viaja só no cookie `luma_refresh` (`HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth`), que o JavaScript não consegue ler; ele nunca aparece no corpo das respostas. `POST /api/v1/auth/refresh` e `POST /api/v1/auth/logout` não têm corpo, leem o cookie e recusam com `403` um header `Origin` fora de `CORS_ALLOWED_ORIGINS`. O logout é público e funciona com o access token vencido. Nunca registre tokens nos logs.
-
-O backend roda com `server.forward-headers-strategy: framework`: atrás dos proxies da Vercel e do Railway, `getRemoteAddr()` devolve o IP real do `X-Forwarded-For`. O rate limit de login conta por IP e por e-mail.
-
-Os demais usuários (staff e outros owners) são criados por um owner em `/api/v1/users`, com uma senha temporária que a pessoa é obrigada a trocar no primeiro login: até lá, só `GET /auth/me`, `POST /auth/change-password` e `POST /auth/logout` funcionam (`403 PASSWORD_CHANGE_REQUIRED` no resto). Desativar, mudar o papel ou redefinir a senha de alguém desloga essa pessoa na hora, e a loja nunca fica sem owner ativo (`422 LAST_OWNER`).
-
-Para provisionar o primeiro owner, defina `BOOTSTRAP_OWNER_ENABLED=true`, `BOOTSTRAP_OWNER_NAME`, `BOOTSTRAP_OWNER_EMAIL` e uma `BOOTSTRAP_OWNER_PASSWORD` de uso único com pelo menos 12 caracteres, e inicie a aplicação uma vez. O bootstrap recusa sobrescrever uma conta existente; remova as credenciais e desative a flag imediatamente depois.
-
-### Primeiro owner
-
-No Windows PowerShell, inicie o banco e configure uma senha escolhida localmente; nenhum login/senha padrão é criado ou versionado:
-
-```powershell
-docker compose up -d postgres
-$env:BOOTSTRAP_OWNER_ENABLED = "true"
-$env:BOOTSTRAP_OWNER_NAME = "Owner da loja"
-$env:BOOTSTRAP_OWNER_EMAIL = "owner@example.com"
-$env:BOOTSTRAP_OWNER_PASSWORD = "<senha-unica-com-pelo-menos-12-caracteres>"
-./gradlew bootRun
-```
-
-Caso você não tenha o `JAVA_HOME` configurado, pode definir uma variável de ambiente temporária no PowerShell:
-
-```powershell
-$env:JAVA_HOME = "C:\sdkman\candidates\java\21.0.5-amzn\bin" # substitua pelo caminho do seu JDK 21
-$env:Path = "$env:JAVA_HOME\bin;$env:Path"
-./gradlew bootRun
-```
-
-Ou usar: `./gradlew bootRun -Dorg.gradle.java.home="C:\Program Files\Java\jdk-21"`.
-
-Após a aplicação confirmar a inicialização, o owner já foi criado. Interrompa o processo, desative o bootstrap e remova a senha do ambiente antes de reiniciar:
-
-```powershell
-$env:BOOTSTRAP_OWNER_ENABLED = "false"
-Remove-Item Env:BOOTSTRAP_OWNER_PASSWORD
-./gradlew bootRun
-```
-
-Para entrar pelo Swagger, abra `http://localhost:8080/swagger-ui/index.html`, execute `POST /api/v1/auth/login` com o e-mail e a senha escolhidos acima e use o `accessToken` retornado no botão **Authorize**. O Swagger enviará o token de acesso às rotas privadas.
-
-Para a tela de login do frontend, configure `VITE_API_BASE_URL=http://localhost:8080/api/v1` em `mimo-frontend/.env.local`, reinicie o Vite e entre com as mesmas credenciais:
-
-```dotenv
-VITE_API_BASE_URL=http://localhost:8080/api/v1
-```
-
-Pelo Swagger, o login grava o cookie no navegador. O `refresh` e o `logout` pelo Swagger respondem `403`, porque a origem `http://localhost:8080` não está em `CORS_ALLOWED_ORIGINS`; para testá-los com curl, mande o cookie sem o header `Origin`:
+## Início rápido
 
 ```bash
-curl -i -X POST http://localhost:8080/api/v1/auth/refresh --cookie "luma_refresh=<token>"
+cp .env.example .env              # defina DB_PASSWORD
+docker compose up -d              # PostgreSQL local
+./gradlew bootRun                 # Windows: gradlew.bat bootRun
+./gradlew clean check             # testes (não precisam de Docker)
 ```
 
-O health check está disponível em `/actuator/health`; a OpenAPI está em `/v3/api-docs` e a Swagger UI em `/swagger-ui/index.html`. São públicos apenas o health, a documentação da API, o login/refresh/logout e o download de fotos (`GET /api/v1/photos/{id}`); as métricas (`/actuator/metrics`, `/actuator/prometheus`) exigem owner e as demais rotas exigem um JWT válido.
+Na primeira vez é preciso criar o owner: veja [DESENVOLVIMENTO.md](DESENVOLVIMENTO.md#primeiro-login-local).
 
-## Contratos HTTP
+Com a aplicação no ar:
 
-Toda resposta inclui `X-Request-Id` e `X-Trace-Id` (ver [TRACING.md](TRACING.md)). Os clientes podem enviar um identificador com 1 a 64 caracteres usando letras, dígitos, `.`, `_` ou `-`; valores inválidos são substituídos. O valor também é colocado no MDC de logging. Os erros usam `application/problem+json` com `code`, `requestId` e `fields` opcionais estáveis; erros internos nunca incluem mensagens de exceção ou stack traces na resposta.
+- Swagger UI: `http://localhost:8080/swagger-ui/index.html`
+- OpenAPI: `http://localhost:8080/v3/api-docs`
+- Health: `http://localhost:8080/actuator/health`
 
-Os endpoints de listagem devem usar `PaginationRequest` e `PageEnvelope`: `page` é base 1, padrão 1; `pageSize` tem padrão 50 e é limitado a 200. Cada endpoint fornece sua própria lista permitida a `toPageable`, para que valores de ordenação enviados pelo cliente nunca sejam interpolados em SQL.
+## Módulos
 
-Para mutações reexecutáveis, chame `IdempotencyService.execute` dentro da transação do serviço de aplicação com o ID do usuário autenticado, um escopo estável de operação, o cabeçalho `Idempotency-Key`, o payload da requisição e um callback retornando `IdempotentResponse`. A chave é escopada por usuário e operação. JSON canônico idêntico replaya o status/corpo HTTP salvo por 24 horas por padrão; reutilizar a chave com um payload diferente retorna `409 IDEMPOTENCY_KEY_REUSED`. Chaves expiradas podem ser reivindicadas novamente. O documento OpenAPI descreve o esquema de autenticação, erros comuns, paginação e o componente do cabeçalho `Idempotency-Key`.
+Todas as rotas ficam em `/api/v1`.
 
-## Vendedores e configurações da loja
+| Módulo | Rotas | Quem acessa |
+|---|---|---|
+| Autenticação | `/auth` (login, refresh, logout, me, troca de senha) | Público / autenticado |
+| Usuários | `/users` | Owner |
+| Vendedoras | `/sellers`, incluindo estatísticas, comissão, agenda de repasses e lotes | Owner e staff (estatísticas, comissão e mutações só owner) |
+| Peças | `/pieces` (recebimento, etiquetagem, histórico, custos) | Autenticado (custos só owner) |
+| Consignações | `/consignments` (lotes, venda e devolução de itens) | Owner e staff |
+| Fotos | `/uploads/piece-photo`, `/photos/{id}` | Upload autenticado, download público |
+| Configurações | `/settings` | Leitura owner e staff, alteração owner |
+| Dashboard e relatórios | `/dashboard`, `/reports` (giro, atrasos, peças paradas) | Owner |
 
-`GET /api/v1/sellers` está disponível para owner/staff e aceita `status`, `q`, `page`, `pageSize` e valores de `sort` permitidos. Vendedores inativos permanecem visíveis e filtráveis para histórico. Mutações de vendedor, estatísticas e relatórios de comissão exigem OWNER; mutações exigem `Idempotency-Key`. `GET /api/v1/sellers/{id}/consignments` está disponível para owner/staff.
-
-O Flyway alimenta as configurações da loja, não uma conta de owner: comissão de 25-40% em passos de 5 pontos, padrão 30%, termos de pagamento `[30, 60, 90]`, 30 dias padrão de consignação e `America/Sao_Paulo`. A faixa de comissão e as opções de termos de pagamento são fixas nesta versão; `PATCH /api/v1/settings` altera apenas a taxa padrão, os termos permitidos selecionados, os dias padrão e o fuso horário. Alterações nas configurações exigem OWNER e `Idempotency-Key`.
-
-As estatísticas de vendedores e os totais de comissão são em centavos inteiros. Os relatórios de comissão usam o `commission_rate_snapshot` do item vendido, não a taxa atual do vendedor; `from` e `to` são datas locais inclusivas no fuso horário configurado da loja. Novas consignações devem usar vendedores ativos: chame `SellerApplicationService.requireActiveForConsignment` para obter o erro de aplicação `SELLER_INACTIVE`. Um trigger do PostgreSQL bloqueia independentemente inserções ou alterações de vendedor em vendedores inativos, preservando consignações e snapshots existentes quando um vendedor é inativado.
+São públicos apenas o health, a documentação da API, login/refresh/logout e o download de fotos. As métricas exigem owner e o resto exige um JWT válido.
