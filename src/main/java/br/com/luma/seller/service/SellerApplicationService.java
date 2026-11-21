@@ -10,6 +10,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
@@ -19,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import br.com.luma.shared.logging.AfterCommit;
 import br.com.luma.auth.repository.UserRepository;
 import br.com.luma.consignment.mapper.ConsignmentMapper;
 import br.com.luma.consignment.repository.ConsignmentRepository;
@@ -50,6 +53,8 @@ import br.com.luma.shared.entity.AuditLogEntity;
 
 @Service
 public class SellerApplicationService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(SellerApplicationService.class);
 
     private static final Set<String> SELLER_SORT_FIELDS = Set.of(
             "name", "phone", "commissionRate", "status", "createdAt", "updatedAt");
@@ -154,6 +159,9 @@ public class SellerApplicationService {
             seller = sellerRepository.saveAndFlush(seller);
             audit(actorId, seller.getId(), "SELLER_CREATED", ipAddress,
                     Map.of("status", seller.getStatus().name(), "commissionRate", seller.getCommissionRate()));
+            UUID createdId = seller.getId();
+            int rate = seller.getCommissionRate();
+            AfterCommit.run(() -> LOGGER.info("Seller created sellerId={} commissionRate={}", createdId, rate));
             return new IdempotentResponse(201, objectMapper.valueToTree(sellerMapper.toResponse(seller)));
         });
     }
@@ -169,6 +177,7 @@ public class SellerApplicationService {
             }
             SellerEntity seller = sellerRepository.findByIdForUpdate(sellerId)
                     .orElseThrow(() -> sellerNotFound(sellerId));
+            SellerStatus previousStatus = seller.getStatus();
             if (request.name() != null) {
                 if (request.name().isBlank()) {
                     throw validation("name", "O nome não pode ficar vazio.");
@@ -188,6 +197,19 @@ public class SellerApplicationService {
             seller = sellerRepository.saveAndFlush(seller);
             audit(actorId, sellerId, "SELLER_UPDATED", ipAddress,
                     Map.of("status", seller.getStatus().name(), "commissionRate", seller.getCommissionRate()));
+            List<String> changedFields = new java.util.ArrayList<>();
+            if (request.name() != null) changedFields.add("name");
+            if (request.phone() != null) changedFields.add("phone");
+            if (request.commissionRate() != null) changedFields.add("commissionRate");
+            if (request.status() != null) changedFields.add("status");
+            SellerStatus status = seller.getStatus();
+            AfterCommit.run(() -> {
+                LOGGER.info("Seller updated sellerId={} status={} changedFields={}", sellerId, status, changedFields);
+                if (status != previousStatus) {
+                    LOGGER.info("Seller status changed sellerId={} previousStatus={} status={}", sellerId,
+                            previousStatus, status);
+                }
+            });
             return new IdempotentResponse(200, objectMapper.valueToTree(sellerMapper.toResponse(seller)));
         });
     }

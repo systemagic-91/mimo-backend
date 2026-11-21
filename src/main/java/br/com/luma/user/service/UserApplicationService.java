@@ -8,6 +8,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -16,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import br.com.luma.shared.logging.AfterCommit;
 import br.com.luma.auth.entity.UserEntity;
 import br.com.luma.auth.mapper.UserMapper;
 import br.com.luma.auth.repository.RefreshTokenRepository;
@@ -34,6 +37,8 @@ import br.com.luma.user.dto.UpdateUserRequest;
 
 @Service
 public class UserApplicationService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(UserApplicationService.class);
 
     private static final Set<String> SORT_FIELDS = Set.of("name", "email", "role", "active", "createdAt", "updatedAt");
 
@@ -97,6 +102,10 @@ public class UserApplicationService {
             user.setPasswordHash(passwordEncoder.encode(request.temporaryPassword()));
             user = userRepository.saveAndFlush(user);
             audit(actorId, user, "USER_CREATED", ipAddress);
+            UUID createdId = user.getId();
+            Role createdRole = user.getRole();
+            AfterCommit.run(() -> LOGGER.info("User created actorId={} targetUserId={} role={}", actorId, createdId,
+                    createdRole));
             return new IdempotentResponse(201, objectMapper.valueToTree(userMapper.toResponse(user)));
         });
     }
@@ -118,6 +127,8 @@ public class UserApplicationService {
             boolean self = user.getId().equals(actorId);
             boolean roleChanges = request.role() != null && request.role() != user.getRole();
             boolean deactivates = Boolean.FALSE.equals(request.active()) && user.isActive();
+            boolean reactivates = Boolean.TRUE.equals(request.active()) && !user.isActive();
+            Role previousRole = user.getRole();
 
             if (self && deactivates) {
                 throw unprocessable("CANNOT_DEACTIVATE_SELF", "Você não pode desativar a própria conta.");
@@ -158,6 +169,19 @@ public class UserApplicationService {
                 refreshTokenRepository.revokeAllActiveByUserId(saved.getId(), clock.instant());
             }
             audit(actorId, saved, "USER_UPDATED", ipAddress);
+            List<String> changedFields = changedFields(request, roleChanges, deactivates || reactivates);
+            Role newRole = saved.getRole();
+            AfterCommit.run(() -> {
+                LOGGER.info("User updated actorId={} targetUserId={} changedFields={}", actorId, userId, changedFields);
+                if (roleChanges) {
+                    LOGGER.info("User role changed actorId={} targetUserId={} previousRole={} role={}", actorId,
+                            userId, previousRole, newRole);
+                }
+                if (deactivates || reactivates) {
+                    LOGGER.info("User {} actorId={} targetUserId={}", deactivates ? "deactivated" : "reactivated",
+                            actorId, userId);
+                }
+            });
             return new IdempotentResponse(200, objectMapper.valueToTree(userMapper.toResponse(saved)));
         });
     }
@@ -178,6 +202,7 @@ public class UserApplicationService {
             UserEntity saved = userRepository.saveAndFlush(user);
             refreshTokenRepository.revokeAllActiveByUserId(saved.getId(), clock.instant());
             audit(actorId, saved, "USER_PASSWORD_RESET", ipAddress);
+            AfterCommit.run(() -> LOGGER.info("User password reset actorId={} targetUserId={}", actorId, userId));
             return new IdempotentResponse(200, objectMapper.valueToTree(userMapper.toResponse(saved)));
         });
     }
@@ -188,6 +213,16 @@ public class UserApplicationService {
         state.put("active", user.isActive());
         state.put("mustChangePassword", user.isMustChangePassword());
         auditTrail.record(actorId, action, "USER", user.getId(), ipAddress, state);
+    }
+
+    // Só os nomes dos campos: nome e e-mail não vão para o log.
+    private static List<String> changedFields(UpdateUserRequest request, boolean roleChanges, boolean activeChanges) {
+        List<String> fields = new java.util.ArrayList<>();
+        if (request.name() != null) fields.add("name");
+        if (request.email() != null) fields.add("email");
+        if (roleChanges) fields.add("role");
+        if (activeChanges) fields.add("active");
+        return fields;
     }
 
     private static String normalizeEmail(String email) {

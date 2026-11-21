@@ -8,6 +8,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
@@ -15,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import br.com.luma.shared.logging.AfterCommit;
 import br.com.luma.auth.repository.UserRepository;
 import br.com.luma.setting.dto.UpdateSettingsRequest;
 import br.com.luma.setting.entity.SettingsEntity;
@@ -29,6 +32,8 @@ import br.com.luma.shared.entity.AuditLogEntity;
 
 @Service
 public class SettingsApplicationService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(SettingsApplicationService.class);
 
     private static final Set<Integer> ALLOWED_PAYMENT_TERMS = Set.of(30, 60, 90);
 
@@ -66,6 +71,19 @@ public class SettingsApplicationService {
             SettingsEntity settings = settingsRepository.findSingletonForUpdate()
                     .orElseThrow(() -> new IllegalStateException("Default store settings are missing"));
             validate(request, settings);
+            List<String> changedFields = new java.util.ArrayList<>();
+            if (!java.util.Objects.equals(request.defaultCommissionRate(), settings.getDefaultCommissionRate())) {
+                changedFields.add("defaultCommissionRate");
+            }
+            if (!request.paymentTerms().stream().distinct().sorted().toList().equals(settings.getPaymentTerms())) {
+                changedFields.add("paymentTerms");
+            }
+            if (!java.util.Objects.equals(request.defaultConsignmentDays(), settings.getDefaultConsignmentDays())) {
+                changedFields.add("defaultConsignmentDays");
+            }
+            String previousTimezone = settings.getTimezone();
+            boolean timezoneChanges = !previousTimezone.equals(request.timezone().trim());
+            if (timezoneChanges) changedFields.add("timezone");
             settings.setDefaultCommissionRate(request.defaultCommissionRate());
             settings.setPaymentTerms(request.paymentTerms().stream().distinct().sorted().toList());
             settings.setDefaultConsignmentDays(request.defaultConsignmentDays());
@@ -86,6 +104,14 @@ public class SettingsApplicationService {
             audit.setIpAddress(ipAddress);
             audit.setOccurredAt(clock.instant());
             auditLogRepository.save(audit);
+            String timezone = settings.getTimezone();
+            AfterCommit.run(() -> {
+                LOGGER.info("Settings updated changedFields={}", changedFields);
+                if (timezoneChanges) {
+                    // Muda o que conta como "hoje" para vencimentos e relatórios.
+                    LOGGER.info("Store timezone changed previousTimezone={} timezone={}", previousTimezone, timezone);
+                }
+            });
             return new IdempotentResponse(200, objectMapper.valueToTree(response));
         });
     }

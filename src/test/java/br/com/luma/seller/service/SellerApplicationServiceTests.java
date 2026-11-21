@@ -25,6 +25,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+
+import br.com.luma.shared.logging.LogLevels;
+import ch.qos.logback.classic.Level;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.http.HttpStatus;
 
@@ -54,7 +59,7 @@ import br.com.luma.shared.idempotency.IdempotencyService;
 import br.com.luma.shared.idempotency.IdempotentResponse;
 import br.com.luma.shared.repository.AuditLogRepository;
 
-@ExtendWith(MockitoExtension.class)
+@ExtendWith({ MockitoExtension.class, OutputCaptureExtension.class })
 class SellerApplicationServiceTests {
 
     private static final Instant NOW = Instant.parse("2026-10-30T12:00:00Z");
@@ -182,6 +187,20 @@ class SellerApplicationServiceTests {
         assertThat(seller.getStatus()).isEqualTo(SellerStatus.INATIVA);
         assertThat(seller.getName()).isEqualTo("Ana");
         assertThat(seller.getCommissionRate()).isEqualTo(30);
+    }
+
+    @Test
+    void logsTheStatusChangeWithoutNameOrPhone(CapturedOutput output) throws Exception {
+        try (AutoCloseable logs = LogLevels.set("br.com.luma", Level.INFO)) {
+            SellerEntity seller = seller(SellerStatus.ATIVA);
+            when(sellerRepository.findByIdForUpdate(seller.getId())).thenReturn(Optional.of(seller));
+
+            service.update(ACTOR_ID, seller.getId(), "key", new UpdateSellerRequest("Ana Nova", null, null, "inativa"), IP);
+
+            assertThat(output).contains("Seller updated sellerId=" + seller.getId() + " status=INATIVA changedFields=[name, status]")
+                    .contains("Seller status changed sellerId=" + seller.getId() + " previousStatus=ATIVA status=INATIVA")
+                    .doesNotContain("Ana Nova");
+        }
     }
 
     @Test
