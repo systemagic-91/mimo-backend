@@ -11,6 +11,7 @@ Java 21, Spring Boot 3.5, Gradle e PostgreSQL 16 (migrations com Flyway).
 | [DESENVOLVIMENTO.md](DESENVOLVIMENTO.md) | Rodar localmente, primeiro login, testes, convenções da API e regras de domínio |
 | [AUTENTICACAO.md](AUTENTICACAO.md) | Tokens, cookie de sessão, papéis e gestão de usuários |
 | [RUNBOOK.md](RUNBOOK.md) | Variáveis de ambiente, primeiro owner, migrations, deploy no Railway, CI, backup e retenção de dados |
+| [LOGS.md](LOGS.md) | O que é logado, os modos (econômico a completo), as vendas sempre logadas e como ligar e desligar pelo Railway e pelo Actuator |
 | [TRACING.md](TRACING.md) | Como seguir uma requisição pelos logs com `traceId` |
 | [METRICAS.md](METRICAS.md) | Métricas técnicas e da loja em `/actuator/metrics` e `/actuator/prometheus` |
 
@@ -46,4 +47,4 @@ Todas as rotas ficam em `/api/v1`.
 | Configurações | `/settings` | Leitura owner e staff, alteração owner |
 | Dashboard e relatórios | `/dashboard`, `/reports` (giro, atrasos, peças paradas) | Owner |
 
-São públicos apenas o health, a documentação da API, login/refresh/logout e o download de fotos. As métricas exigem owner e o resto exige um JWT válido.
+São públicos apenas o health, a documentação da API, login/refresh/logout e o download de fotos. As métricas e os níveis de log (`/actuator/loggers`) exigem owner e o resto exige um JWT válido.

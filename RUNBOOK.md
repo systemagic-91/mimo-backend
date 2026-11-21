@@ -43,6 +43,10 @@ Na primeira vez, crie o owner (seção 3). Os testes não precisam de Docker:
 | `IDEMPOTENCY_TTL` | Não | `P1D` | Por quanto tempo uma `Idempotency-Key` repete a resposta |
 | `IDEMPOTENCY_RETENTION` | Não | `P7D` | Quanto tempo depois de vencer a chave é apagada |
 | `IDEMPOTENCY_CLEANUP_CRON` / `_ZONE` | Não | `0 30 3 * * *` / `America/Sao_Paulo` | Horário da limpeza das chaves |
+| `LOG_LEVEL_APP` | Não | `ERROR` | Nível dos eventos do backend (`br.com.luma`). Ver [LOGS.md](LOGS.md) |
+| `LOG_LEVEL_ACCESS` | Não | `OFF` | Linha por requisição (`br.com.luma.access`): `OFF`, `WARN` (só lentas) ou `INFO` |
+| `LOG_LEVEL_ROOT` | Não | `WARN` | Nível das bibliotecas (Spring, Hibernate, Tomcat) |
+| `LOG_SLOW_REQUEST_MS` | Não | `1000` | Acima disso a requisição sai em `WARN` com `slow=true` |
 | `PHOTO_CLEANUP_CRON` / `_ZONE` | Não | `0 0 4 * * *` / `America/Sao_Paulo` | Horário da limpeza de fotos órfãs |
 | `TRACING_SAMPLING_PROBABILITY` | Não | `1.0` | Fração das requisições rastreadas (ver TRACING.md) |
 | `JAVA_TOOL_OPTIONS` | Não (recomendada no Railway) | nenhum | Opções da JVM para gastar menos memória (ver seção 5.1) |
