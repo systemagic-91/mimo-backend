@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -30,6 +32,8 @@ import br.com.luma.shared.exception.ApiException;
 
 @Service
 public class IdempotencyService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(IdempotencyService.class);
 
     private final IdempotencyKeyRepository idempotencyKeyRepository;
     private final UserRepository userRepository;
@@ -68,12 +72,17 @@ public class IdempotencyService {
 
         if (claimed == 0) {
             if (!entry.getFingerprint().equals(fingerprint)) {
+                LOGGER.warn("Idempotency key reused with another payload scope={} key={}", operation, keyPrefix(idempotencyKey));
                 throw conflict("IDEMPOTENCY_KEY_REUSED",
                         "A chave Idempotency-Key já foi usada com outro payload.");
             }
             if (entry.getResponseStatus() == null) {
+                LOGGER.warn("Idempotent operation still in progress scope={} key={}", operation, keyPrefix(idempotencyKey));
                 throw conflict("IDEMPOTENCY_IN_PROGRESS", "Uma operação com esta chave ainda está em andamento.");
             }
+            // Retry de algo que já deu certo: devolve a resposta salva, sem repetir a operação.
+            LOGGER.info("Idempotent response replayed scope={} key={} status={}", operation, keyPrefix(idempotencyKey),
+                    entry.getResponseStatus());
             return new IdempotentResponse(entry.getResponseStatus(), entry.getResponseBody());
         }
 
@@ -87,6 +96,11 @@ public class IdempotencyService {
         entry.setResponseBody(result.body() == null ? null : result.body().deepCopy());
         idempotencyKeyRepository.save(entry);
         return result;
+    }
+
+    // Só o começo da chave: o suficiente para cruzar retries, sem expor a chave inteira.
+    private static String keyPrefix(String key) {
+        return key.length() <= 8 ? key : key.substring(0, 8);
     }
 
     private String scopedKey(String operation, String key) {

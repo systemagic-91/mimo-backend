@@ -19,7 +19,13 @@ public class IdempotencyCleanupJob {
     @Scheduled(cron = "${app.idempotency.cleanup.cron:0 30 3 * * *}",
             zone = "${app.idempotency.cleanup.zone:America/Sao_Paulo}")
     public void deleteExpiredKeys() {
-        int deleted = idempotencyService.deleteExpired();
-        LOGGER.info("Expired idempotency keys deleted count={}", deleted);
+        long start = System.nanoTime();
+        try {
+            int deleted = idempotencyService.deleteExpired();
+            LOGGER.info("Expired idempotency keys deleted count={} durationMs={}", deleted,
+                    (System.nanoTime() - start) / 1_000_000);
+        } catch (RuntimeException exception) {
+            LOGGER.error("Idempotency key cleanup failed", exception);
+        }
     }
 }

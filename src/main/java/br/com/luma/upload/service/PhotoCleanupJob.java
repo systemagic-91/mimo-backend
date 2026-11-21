@@ -19,7 +19,13 @@ public class PhotoCleanupJob {
     @Scheduled(cron = "${app.uploads.orphan-cleanup.cron:0 0 4 * * *}",
             zone = "${app.uploads.orphan-cleanup.zone:America/Sao_Paulo}")
     public void deleteOrphanPhotos() {
-        int deleted = photoService.deleteOrphans();
-        LOGGER.info("Orphan piece photos deleted count={}", deleted);
+        long start = System.nanoTime();
+        try {
+            int deleted = photoService.deleteOrphans();
+            LOGGER.info("Orphan piece photos deleted count={} durationMs={}", deleted,
+                    (System.nanoTime() - start) / 1_000_000);
+        } catch (RuntimeException exception) {
+            LOGGER.error("Orphan photo cleanup failed", exception);
+        }
     }
 }
