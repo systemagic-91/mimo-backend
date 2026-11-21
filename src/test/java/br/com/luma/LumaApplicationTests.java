@@ -15,6 +15,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -46,6 +50,7 @@ import br.com.luma.upload.service.PhotoContent;
 @AutoConfigureMockMvc
 @org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability
 @ActiveProfiles("test")
+@ExtendWith(OutputCaptureExtension.class)
 class LumaApplicationTests {
 
     @Autowired
@@ -175,6 +180,47 @@ class LumaApplicationTests {
         mockMvc.perform(get("/actuator/prometheus").with(role("OWNER")))
                 .andExpect(status().isOk())
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("jvm_memory_used_bytes")));
+    }
+
+    @Test
+    void defaultLogLevelsAreEconomicButSalesAreAlwaysLogged() {
+        assertThat(LoggerFactory.getLogger("br.com.luma.piece").isErrorEnabled()).isTrue();
+        assertThat(LoggerFactory.getLogger("br.com.luma.piece").isWarnEnabled()).isFalse();
+        assertThat(LoggerFactory.getLogger("br.com.luma.access").isWarnEnabled()).isFalse();
+        assertThat(LoggerFactory.getLogger("br.com.luma.sales").isInfoEnabled()).isTrue();
+        assertThat(LoggerFactory.getLogger("br.com.luma.loglevel").isInfoEnabled()).isTrue();
+        assertThat(LoggerFactory.getLogger("org.hibernate.SQL").isInfoEnabled()).isFalse();
+    }
+
+    @Test
+    void logLevelsChangeOnlyThroughTheOwnerAndNeverForSales(CapturedOutput output) throws Exception {
+        String logger = "/actuator/loggers/br.com.luma.access";
+        mockMvc.perform(get(logger)).andExpect(status().isUnauthorized());
+        mockMvc.perform(get(logger).with(role("STAFF"))).andExpect(status().isForbidden());
+        mockMvc.perform(get(logger).with(role("OWNER")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.effectiveLevel").value("OFF"));
+
+        mockMvc.perform(post("/actuator/loggers/br.com.luma.sales").with(role("OWNER"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"configuredLevel\":\"OFF\"}"))
+                .andExpect(status().isForbidden());
+        assertThat(LoggerFactory.getLogger("br.com.luma.sales").isInfoEnabled()).isTrue();
+
+        try {
+            mockMvc.perform(post(logger).with(role("OWNER"))
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"configuredLevel\":\"INFO\"}"))
+                    .andExpect(status().isNoContent());
+            assertThat(output).contains("Log level changed logger=br.com.luma.access level=INFO");
+
+            mockMvc.perform(get("/actuator/metrics").with(role("OWNER"))).andExpect(status().isOk());
+            assertThat(output).contains("HTTP request method=GET path=/actuator/metrics status=200")
+                    .contains("role:owner");
+        } finally {
+            mockMvc.perform(post(logger).with(role("OWNER"))
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"configuredLevel\":null}"))
+                    .andExpect(status().isNoContent());
+        }
+        assertThat(LoggerFactory.getLogger("br.com.luma.access").isWarnEnabled()).isFalse();
     }
 
     @Test

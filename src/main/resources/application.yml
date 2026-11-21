@@ -22,6 +22,9 @@ spring:
       max-file-size: 1MB
       max-request-size: 2MB
 app:
+  logging:
+    # Acima disso, a linha de acesso sai em WARN com slow=true.
+    slow-request-ms: ${LOG_SLOW_REQUEST_MS:1000}
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173}
   security:
@@ -60,7 +63,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,metrics,prometheus
+        include: health,metrics,prometheus,loggers
   endpoint:
     health:
       show-details: never
@@ -83,4 +86,13 @@ springdoc:
 logging:
   pattern:
     correlation: ""
-    level: "%5p [requestId:%X{requestId:-} traceId:%X{traceId:-} spanId:%X{spanId:-}]"
+    level: "%5p [requestId:%X{requestId:-} traceId:%X{traceId:-} spanId:%X{spanId:-} userId:%X{userId:-} role:%X{role:-}]"
+  # Padrão econômico (BACK_28): erros do backend, avisos das bibliotecas e as vendas. Veja LOGS.md.
+  level:
+    root: ${LOG_LEVEL_ROOT:WARN}
+    br.com.luma: ${LOG_LEVEL_APP:ERROR}
+    br.com.luma.access: ${LOG_LEVEL_ACCESS:OFF}
+    # Vendas: sempre ligado, sem variável de propósito (o Actuator também recusa mudar).
+    br.com.luma.sales: INFO
+    # Quem mudou o nível de log pelo Actuator (ação manual, volume mínimo).
+    br.com.luma.loglevel: INFO

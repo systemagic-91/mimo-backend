@@ -16,7 +16,12 @@ import org.springframework.security.oauth2.server.resource.web.DefaultBearerToke
 import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import br.com.luma.auth.web.PasswordChangeRequiredFilter;
+import br.com.luma.shared.logging.LogLevelChangeFilter;
+import br.com.luma.shared.logging.SalesLog;
+import br.com.luma.shared.logging.UserMdcFilter;
 import br.com.luma.shared.web.ProblemDetailWriter;
 
 @Configuration
@@ -35,7 +40,7 @@ public class SecurityConfiguration {
 
     @Bean
             SecurityFilterChain securityFilterChain(HttpSecurity http, JwtAuthenticationConverter jwtAuthenticationConverter,
-                    ProblemDetailWriter problemDetailWriter)
+                    ProblemDetailWriter problemDetailWriter, ObjectMapper objectMapper)
                         throws Exception {
         return http
                 .csrf(AbstractHttpConfigurer::disable)
@@ -60,7 +65,11 @@ public class SecurityConfiguration {
                         .permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/photos/*")
                         .permitAll()
-                        .requestMatchers("/actuator/metrics", "/actuator/metrics/**", "/actuator/prometheus")
+                        // As vendas são sempre logadas: ninguém muda o nível desse logger pelo Actuator.
+                        .requestMatchers(HttpMethod.POST, "/actuator/loggers/" + SalesLog.LOGGER_NAME)
+                        .denyAll()
+                        .requestMatchers("/actuator/metrics", "/actuator/metrics/**", "/actuator/prometheus",
+                                "/actuator/loggers", "/actuator/loggers/**")
                         .hasRole("OWNER")
                         .requestMatchers(HttpMethod.GET, "/api/v1/settings")
                         .hasAnyRole("OWNER", "STAFF")
@@ -73,8 +82,9 @@ public class SecurityConfiguration {
                         .bearerTokenResolver(bearerTokenResolver())
                         .jwt(jwt ->
                         jwt.jwtAuthenticationConverter(jwtAuthenticationConverter)))
-                .addFilterAfter(new PasswordChangeRequiredFilter(problemDetailWriter),
-                        BearerTokenAuthenticationFilter.class)
+                .addFilterAfter(new UserMdcFilter(), BearerTokenAuthenticationFilter.class)
+                .addFilterAfter(new LogLevelChangeFilter(objectMapper), UserMdcFilter.class)
+                .addFilterAfter(new PasswordChangeRequiredFilter(problemDetailWriter), LogLevelChangeFilter.class)
                 .build();
     }
 }
