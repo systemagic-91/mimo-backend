@@ -29,6 +29,12 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+
+import br.com.luma.shared.logging.LogLevels;
+import br.com.luma.shared.logging.SalesLog;
+import ch.qos.logback.classic.Level;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -75,7 +81,7 @@ import br.com.luma.shared.metrics.BusinessMetrics;
 import br.com.luma.shared.security.CurrentUserRoles;
 import br.com.luma.shared.repository.AuditLogRepository;
 
-@ExtendWith(MockitoExtension.class)
+@ExtendWith({ MockitoExtension.class, OutputCaptureExtension.class })
 class ConsignmentApplicationServiceTests {
 
     private static final Instant NOW = Instant.parse("2026-10-30T12:00:00Z");
@@ -507,6 +513,26 @@ class ConsignmentApplicationServiceTests {
         // Vendida em 2026-10-30 (09:00 em São Paulo) + 30 dias; deve 10.001 − 30% (3.000,3 → 3.000).
         assertThat(item.get("paymentDueDate").asText()).isEqualTo("2026-11-29");
         assertThat(item.get("amountDueCents").asLong()).isEqualTo(7_001);
+    }
+
+    @Test
+    void everySaleIsLoggedEvenWithTheRestOfTheBackendOff(CapturedOutput output) throws Exception {
+        try (AutoCloseable app = LogLevels.set("br.com.luma", Level.OFF);
+                AutoCloseable sales = LogLevels.set(SalesLog.LOGGER_NAME, Level.INFO)) {
+            ItemFixture fixture = itemFixture(ConsignmentItemStatus.COM_VENDEDORA, PieceStage.CONSIGNACAO);
+            fixture.item.setValueCentsSnapshot(8_490);
+            when(itemRepository.countByConsignment_IdAndStatus(fixture.consignment.getId(),
+                    ConsignmentItemStatus.COM_VENDEDORA)).thenReturn(1L);
+
+            service.markSold(ACTOR_ID, "key", fixture.consignment.getId(), fixture.piece.getId(), null, IP);
+        }
+
+        assertThat(output).contains("Sale registered consignmentId=")
+                .contains("pieceId=")
+                .contains("valueCents=8490")
+                .contains("retroactive=false")
+                // O resto do backend estava desligado: nada de "Consignment settled" nem de outros eventos.
+                .doesNotContain("Consignment settled");
     }
 
     @Test

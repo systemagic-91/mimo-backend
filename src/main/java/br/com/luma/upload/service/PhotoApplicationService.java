@@ -9,6 +9,8 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -16,6 +18,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import br.com.luma.shared.logging.AfterCommit;
 import br.com.luma.auth.repository.UserRepository;
 import br.com.luma.shared.audit.AuditTrail;
 import br.com.luma.shared.exception.ApiException;
@@ -29,6 +32,8 @@ import br.com.luma.upload.repository.PiecePhotoRepository;
 
 @Service
 public class PhotoApplicationService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(PhotoApplicationService.class);
 
     public static final int MAX_SIZE_BYTES = 1024 * 1024;
     static final Duration ORPHAN_TTL = Duration.ofHours(24);
@@ -77,6 +82,10 @@ public class PhotoApplicationService {
                             "contentType", metadata.contentType(), "width", metadata.width(),
                             "height", metadata.height(), "sizeBytes", content.length));
                     metrics.photoUploaded(content.length);
+                    UUID photoId = photo.getId();
+                    AfterCommit.run(() -> LOGGER.info(
+                            "Photo uploaded photoId={} bytes={} width={} height={} contentType={}", photoId,
+                            content.length, metadata.width(), metadata.height(), metadata.contentType()));
 
                     PhotoUploadResponse response = new PhotoUploadResponse(photo.getId(),
                             PhotoUrls.of(photo.getId()), metadata.width(), metadata.height());
@@ -107,6 +116,7 @@ public class PhotoApplicationService {
             throw PhotoInspector.invalid("Envie o arquivo da foto no campo file.");
         }
         if (file.getSize() > MAX_SIZE_BYTES) {
+            LOGGER.warn("Photo rejected reason=TOO_LARGE bytes={}", file.getSize());
             throw photoTooLarge();
         }
         try {

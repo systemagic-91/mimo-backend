@@ -7,6 +7,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -15,6 +17,8 @@ import br.com.luma.shared.exception.ApiException;
 
 @Component
 public class PhotoUploadRateLimiter {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(PhotoUploadRateLimiter.class);
 
     private final Map<UUID, Window> windows = new HashMap<>();
     private final Clock clock;
@@ -34,6 +38,7 @@ public class PhotoUploadRateLimiter {
         windows.values().removeIf(window -> !window.startedAt.plus(windowDuration).isAfter(now));
         Window window = windows.computeIfAbsent(userId, ignored -> new Window(now));
         if (window.uploads >= maxUploads) {
+            LOGGER.warn("Photo upload rate limit reached userId={}", userId);
             throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "RATE_LIMITED",
                     "Muitos envios de foto. Tente novamente em instantes.");
         }

@@ -30,6 +30,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import br.com.luma.shared.logging.SalesLog;
+import br.com.luma.shared.logging.AfterCommit;
 import br.com.luma.auth.repository.UserRepository;
 import br.com.luma.consignment.dto.ConsignmentDetailsResponse;
 import br.com.luma.consignment.dto.ConsignmentListItemResponse;
@@ -245,6 +247,13 @@ public class ConsignmentApplicationService {
             state.put("paymentTermDays", consignment.getPaymentTermDays());
             audit(actorId, consignment.getId(), "CONSIGNMENT_CREATED", ipAddress, state);
             metrics.consignmentCreated(items.size());
+            UUID createdId = consignment.getId();
+            UUID createdSellerId = seller.getId();
+            int pieceCount = items.size();
+            Integer paymentTermDays = consignment.getPaymentTermDays();
+            AfterCommit.run(() -> LOGGER.info(
+                    "Consignment created consignmentId={} code={} sellerId={} pieceCount={} dueDate={} paymentTermDays={}",
+                    createdId, code, createdSellerId, pieceCount, request.dueDate(), paymentTermDays));
 
             consignmentRepository.flush();
             return new IdempotentResponse(201, objectMapper.valueToTree(details(consignment, items, now, zone)));
@@ -270,6 +279,10 @@ public class ConsignmentApplicationService {
                             note != null ? note : "Vendida por " + action.consignment().getSeller().getName(),
                             actorId));
                     metrics.consignmentItemSold();
+                    SalesLog.saleRegistered(action.consignment().getId(), action.consignment().getCode(), pieceId,
+                            action.item().getCodeSnapshot(), action.consignment().getSeller().getId(),
+                            action.item().getValueCentsSnapshot(), action.item().getCommissionRateSnapshot(), soldAt,
+                            requestedAt != null);
                     return finishItemAction(actorId, action, "CONSIGNMENT_ITEM_SOLD", ipAddress);
                 });
     }
@@ -297,6 +310,12 @@ public class ConsignmentApplicationService {
                             createEvent(action.piece(), PieceStage.ETIQUETADA, returnedEventAt.plusMillis(1),
                                     "De volta ao estoque", actorId)));
                     metrics.consignmentItemReturned();
+                    UUID returnedLotId = action.consignment().getId();
+                    String returnedCode = action.item().getCodeSnapshot();
+                    boolean retroactive = requestedAt != null;
+                    AfterCommit.run(() -> LOGGER.info(
+                            "Consignment item returned consignmentId={} pieceId={} code={} retroactive={}",
+                            returnedLotId, pieceId, returnedCode, retroactive));
                     return finishItemAction(actorId, action, "CONSIGNMENT_ITEM_RETURNED", ipAddress);
                 });
     }
@@ -333,6 +352,9 @@ public class ConsignmentApplicationService {
         if (settled) {
             consignment.setStatus(ConsignmentStatus.QUITADA);
             consignmentRepository.save(consignment);
+            UUID settledId = consignment.getId();
+            String settledCode = consignment.getCode();
+            AfterCommit.run(() -> LOGGER.info("Consignment settled consignmentId={} code={}", settledId, settledCode));
         }
 
         Map<String, Object> state = new LinkedHashMap<>();

@@ -8,6 +8,8 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
@@ -19,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import br.com.luma.shared.logging.AfterCommit;
 import br.com.luma.auth.repository.UserRepository;
 import br.com.luma.piece.dto.LabelPieceRequest;
 import br.com.luma.piece.dto.PieceListResponse;
@@ -44,6 +47,8 @@ import br.com.luma.upload.service.PhotoApplicationService;
 
 @Service
 public class PieceApplicationService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(PieceApplicationService.class);
 
     private static final Set<String> ALLOWED_SORT_FIELDS = Set.of(
             "code", "type", "valueCents", "status", "currentLocation", "createdAt", "updatedAt");
@@ -160,6 +165,11 @@ public class PieceApplicationService {
             auditTrail.record(actorId, "PIECE_RECEIVED", "PIECE", piece.getId(), ipAddress, pieceState(piece));
             auditCostChange(actorId, piece, null, null, ipAddress);
             metrics.pieceReceived();
+            UUID receivedId = piece.getId();
+            String receivedCode = piece.getCode();
+            PieceStage receivedStage = piece.getStatus();
+            AfterCommit.run(() -> LOGGER.info("Piece received pieceId={} code={} stage={}", receivedId, receivedCode,
+                    receivedStage));
             ReceivePieceResponse response = new ReceivePieceResponse(toResponse(piece, owner), eventResponses);
             return new IdempotentResponse(201, objectMapper.valueToTree(response));
         });
@@ -209,6 +219,11 @@ public class PieceApplicationService {
             auditTrail.record(actorId, "PIECE_LABELED", "PIECE", piece.getId(), ipAddress, pieceState(piece));
             auditCostChange(actorId, piece, previousFactoryCost, previousBathCost, ipAddress);
             metrics.pieceLabeled();
+            UUID labeledId = piece.getId();
+            String labeledCode = piece.getCode();
+            UUID photoId = piece.getPhotoId();
+            AfterCommit.run(() -> LOGGER.info("Piece labeled pieceId={} code={} photoId={}", labeledId, labeledCode,
+                    photoId == null ? "none" : photoId));
             return new IdempotentResponse(200, objectMapper.valueToTree(toResponse(piece, owner)));
         });
     }
@@ -231,6 +246,11 @@ public class PieceApplicationService {
             }
             piece = pieceRepository.save(piece);
             auditCostChange(actorId, piece, previousFactoryCost, previousBathCost, ipAddress);
+            // Só os nomes dos campos: os valores de custo não vão para o log.
+            List<String> changedFields = new java.util.ArrayList<>();
+            if (patch.hasFactoryCost()) changedFields.add(FACTORY_COST);
+            if (patch.hasBathCost()) changedFields.add(BATH_COST);
+            AfterCommit.run(() -> LOGGER.info("Piece costs updated pieceId={} changedFields={}", pieceId, changedFields));
             return new IdempotentResponse(200, objectMapper.valueToTree(toResponse(piece, true)));
         });
     }
