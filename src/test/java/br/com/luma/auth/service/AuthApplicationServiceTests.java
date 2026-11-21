@@ -23,6 +23,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+
+import br.com.luma.shared.logging.LogLevels;
+import ch.qos.logback.classic.Level;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 
@@ -37,7 +42,7 @@ import br.com.luma.auth.repository.UserRepository;
 import br.com.luma.auth.service.AuthApplicationService.IssuedSession;
 import br.com.luma.shared.Role;
 
-@ExtendWith(MockitoExtension.class)
+@ExtendWith({ MockitoExtension.class, OutputCaptureExtension.class })
 class AuthApplicationServiceTests {
 
     private static final Instant NOW = Instant.parse("2026-10-30T12:00:00Z");
@@ -205,6 +210,33 @@ class AuthApplicationServiceTests {
 
         assertThat(revoked.getRevokedAt()).isEqualTo(NOW.minusSeconds(60));
         verify(refreshTokenRepository, never()).save(any());
+    }
+
+    @Test
+    void logsSessionEventsWithoutPasswordsOrTokens(CapturedOutput output) throws Exception {
+        try (AutoCloseable logs = LogLevels.set("br.com.luma", Level.DEBUG)) {
+            UserEntity user = user(true);
+            user.setMustChangePassword(true);
+            when(userRepository.findByEmailIgnoreCase("owner@example.com")).thenReturn(Optional.of(user));
+            when(userRepository.findById(user.getId())).thenReturn(Optional.of(user));
+            stubAccessToken(user);
+
+            IssuedSession session = service.login(new LoginRequest("owner@example.com", PASSWORD), CLIENT_IP);
+            assertApiError(() -> service.login(new LoginRequest("owner@example.com", "Wrong-Password-1"), CLIENT_IP),
+                    HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS");
+            service.changePassword(user.getId(), new ChangePasswordRequest(PASSWORD, "Brand-New-Password-2"),
+                    CLIENT_IP);
+
+            assertThat(output).contains("Login succeeded userId=" + user.getId())
+                    .contains("Login rejected reason=INVALID_CREDENTIALS email=o***@example.com ip=" + CLIENT_IP)
+                    .contains("Password changed userId=" + user.getId() + " forced=true");
+            assertThat(output).doesNotContain(PASSWORD)
+                    .doesNotContain("Wrong-Password-1")
+                    .doesNotContain("Brand-New-Password-2")
+                    .doesNotContain(session.refreshToken())
+                    .doesNotContain("access-token")
+                    .doesNotContain("owner@example.com");
+        }
     }
 
     @Test

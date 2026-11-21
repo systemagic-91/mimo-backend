@@ -7,14 +7,19 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 
+import br.com.luma.shared.logging.LogMasking;
 import br.com.luma.auth.exception.AuthException;
 
 @Component
 public class LoginRateLimiter {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(LoginRateLimiter.class);
 
     private static final int MAX_TRACKED_CLIENTS = 10_000;
     private final Map<String, Window> windows = new HashMap<>();
@@ -37,6 +42,7 @@ public class LoginRateLimiter {
         Window ipWindow = window("ip:" + clientIp, now);
         Window emailWindow = window("email:" + email, now);
         if (ipWindow.attempts >= maxAttempts || emailWindow.attempts >= maxAttempts) {
+            LOGGER.warn("Login rate limit reached ip={} email={}", clientIp, LogMasking.email(email));
             throw rateLimited();
         }
         ipWindow.attempts++;

@@ -7,6 +7,8 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -14,6 +16,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import br.com.luma.shared.logging.LogMasking;
+import br.com.luma.shared.logging.AfterCommit;
 import br.com.luma.auth.dto.AuthResponse;
 import br.com.luma.auth.dto.AuthSessionResponse;
 import br.com.luma.auth.dto.ChangePasswordRequest;
@@ -28,6 +32,8 @@ import br.com.luma.auth.repository.UserRepository;
 
 @Service
 public class AuthApplicationService {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(AuthApplicationService.class);
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
@@ -76,15 +82,18 @@ public class AuthApplicationService {
 
         if (!passwordMatches) {
             auditService.recordLogin(user == null ? null : user.getId(), "LOGIN_FAILED", "INVALID_CREDENTIALS", clientIp);
+            LOGGER.warn("Login rejected reason=INVALID_CREDENTIALS email={} ip={}", LogMasking.email(email), clientIp);
             throw new AuthException(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Email ou senha inválidos.");
         }
         if (!user.isActive()) {
             auditService.recordLogin(user.getId(), "LOGIN_FAILED", "USER_INACTIVE", clientIp);
+            LOGGER.warn("Login rejected reason=USER_INACTIVE userId={} ip={}", user.getId(), clientIp);
             throw new AuthException(HttpStatus.FORBIDDEN, "USER_INACTIVE", "Usuário inativo.");
         }
 
         loginRateLimiter.recordSuccess(clientIp, email);
         auditService.recordLogin(user.getId(), "LOGIN_SUCCEEDED", "SUCCESS", clientIp);
+        AfterCommit.run(() -> LOGGER.info("Login succeeded userId={} role={}", user.getId(), user.getRole()));
         return issueSession(user, clock.instant());
     }
 
@@ -99,14 +108,17 @@ public class AuthApplicationService {
         if (oldToken.getRevokedAt() != null) {
             refreshTokenRepository.revokeAllActiveByUserId(user.getId(), now);
             auditService.recordLogin(user.getId(), "REFRESH_TOKEN_REUSE", "REVOKED_ALL_SESSIONS", null);
+            LOGGER.warn("Refresh token reuse detected, all sessions revoked userId={}", user.getId());
             throw invalidRefreshToken();
         }
         if (!oldToken.getExpiresAt().isAfter(now)) {
             oldToken.setRevokedAt(now);
+            LOGGER.info("Refresh rejected reason=EXPIRED userId={}", user.getId());
             throw invalidRefreshToken();
         }
         if (!user.isActive()) {
             refreshTokenRepository.revokeAllActiveByUserId(user.getId(), now);
+            LOGGER.info("Refresh rejected reason=USER_INACTIVE userId={}", user.getId());
             throw invalidRefreshToken();
         }
 
@@ -125,6 +137,8 @@ public class AuthApplicationService {
                 .ifPresent(token -> {
                     token.setRevokedAt(clock.instant());
                     refreshTokenRepository.save(token);
+                    UUID userId = token.getUser().getId();
+                    AfterCommit.run(() -> LOGGER.info("Logout userId={}", userId));
                 });
     }
 
@@ -145,18 +159,21 @@ public class AuthApplicationService {
                 .orElseThrow(AuthApplicationService::invalidAccessToken);
         if (!passwordEncoder.matches(request.currentPassword(), user.getPasswordHash())) {
             auditService.recordLogin(user.getId(), "PASSWORD_CHANGE_FAILED", "INVALID_CURRENT_PASSWORD", clientIp);
+            LOGGER.warn("Password change rejected reason=INVALID_CURRENT_PASSWORD userId={} ip={}", userId, clientIp);
             throw new AuthException(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "Credenciais inválidas.");
         }
         if (passwordEncoder.matches(request.newPassword(), user.getPasswordHash())) {
             throw new AuthException(HttpStatus.BAD_REQUEST, "PASSWORD_UNCHANGED", "A nova senha deve ser diferente da atual.");
         }
 
+        boolean forced = user.isMustChangePassword();
         user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
         user.setMustChangePassword(false);
         user.setAuthVersion(user.getAuthVersion() + 1);
         userRepository.saveAndFlush(user);
         refreshTokenRepository.revokeAllActiveByUserId(userId, clock.instant());
         auditService.recordLogin(userId, "PASSWORD_CHANGED", "SUCCESS", clientIp);
+        AfterCommit.run(() -> LOGGER.info("Password changed userId={} forced={}", userId, forced));
     }
 
     private IssuedSession issueSession(UserEntity user, Instant now) {

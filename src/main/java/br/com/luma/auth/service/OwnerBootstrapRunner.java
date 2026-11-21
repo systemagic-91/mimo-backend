@@ -2,6 +2,8 @@ package br.com.luma.auth.service;
 
 import java.util.Locale;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
@@ -18,6 +20,8 @@ import br.com.luma.shared.Role;
 @Component
 @ConditionalOnProperty(name = "app.security.bootstrap-owner.enabled", havingValue = "true")
 public class OwnerBootstrapRunner implements ApplicationRunner {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(OwnerBootstrapRunner.class);
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
@@ -56,5 +60,6 @@ public class OwnerBootstrapRunner implements ApplicationRunner {
         user.setRole(Role.OWNER);
         user.setActive(true);
         userRepository.save(user);
+        LOGGER.info("Bootstrap owner created userId={}", user.getId());
     }
 }
