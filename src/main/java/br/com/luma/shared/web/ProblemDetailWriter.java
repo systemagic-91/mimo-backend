@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import br.com.luma.shared.logging.ApiErrorLog;
+
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
@@ -27,6 +29,7 @@ public class ProblemDetailWriter {
     public void write(HttpServletRequest request, HttpServletResponse response, HttpStatus status,
             String code, String detail) throws IOException {
         ProblemDetail problem = problemFactory.create(status, code, detail, request.getRequestURI(), Map.of());
+        ApiErrorLog.log(status, code, request.getRequestURI(), null);
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
         objectMapper.writeValue(response.getOutputStream(), problem);

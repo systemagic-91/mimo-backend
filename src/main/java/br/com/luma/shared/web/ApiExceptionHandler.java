@@ -6,7 +6,6 @@ import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
@@ -29,6 +28,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import br.com.luma.shared.exception.ApiException;
+import br.com.luma.shared.logging.ApiErrorLog;
 import br.com.luma.upload.service.PhotoApplicationService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
@@ -122,8 +122,9 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     ResponseEntity<ProblemDetail> handleUnexpected(Exception exception, HttpServletRequest request) {
-        LOGGER.error("Unhandled request failure requestId={} exceptionType={}",
-                MDC.get(RequestIdFilter.MDC_KEY), exception.getClass().getSimpleName());
+        // A exceção vai como último argumento para sair a stack trace. requestId, traceId e userId vêm do MDC.
+        LOGGER.error("Unhandled request failure path={} exceptionType={}", request.getRequestURI(),
+                exception.getClass().getSimpleName(), exception);
         return response(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR",
                 "Ocorreu um erro interno. Tente novamente mais tarde.", Map.of(), request);
     }
@@ -131,6 +132,7 @@ public class ApiExceptionHandler {
     private ResponseEntity<ProblemDetail> response(HttpStatus status, String code, String detail,
             Map<String, Object> fields, HttpServletRequest request) {
         ProblemDetail problem = problemFactory.create(status, code, detail, request.getRequestURI(), fields);
+        ApiErrorLog.log(status, code, request.getRequestURI(), fields == null ? null : fields.keySet());
         return ResponseEntity.status(status).body(problem);
     }
 }
